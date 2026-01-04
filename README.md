@@ -53,3 +53,24 @@ Free mode:
 - `maze3d/render_map.py` — minimap renderer
 - `maze3d/ui.py` — menu + prompts + win screen
 - `maze3d/game.py` — main loop + `run()`
+
+## Development
+
+Install dev dependencies:
+
+```bash
+pip install -e ".[dev]"
+```
+
+Run lint + formatting checks:
+
+```bash
+ruff check .
+black --check .
+```
+
+Run tests:
+
+```bash
+pytest
+```

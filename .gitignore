@@ -1,2 +1,18 @@
-**/__pycache__/
+# Python bytecode
+__pycache__/
 *.py[cod]
+*$py.class
+
+# Test caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Packaging
+build/
+dist/
+*.egg-info/
+
+# Virtualenv
+.venv/
+venv/
