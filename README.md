@@ -1,75 +1,81 @@
-# Terminal 3D Maze (Raycasting)
+# ASCII Maze (Terminal 3D Raycasting)
 
-A small terminal game that renders a randomly generated maze in pseudo-3D using raycasting.
-It includes an in-game settings menu, multiple rendering backends, optional demo auto-solve,
-and basic localization (English by default, Russian optional).
+A single-file terminal game that renders a 3D maze using classic raycasting.  
+Designed to adapt to different terminal capabilities (UTF-8, colors, mouse reporting) and offer multiple renderers.
 
 ## Features
 
-- **Raycasting pseudo-3D** view rendered in a terminal (curses).
-- **Random perfect maze** generation (guaranteed solvable each run).
-- **Settings / menu (ESC)** with runtime toggles:
-  - Renderer selection: `text`, `half`, `braille`, `auto`
-  - Color / Unicode: `on/off/auto` (best-effort)
-  - Mouse look: `on/off/auto` (terminal-dependent)
-  - HUD mode and visibility behavior
-  - FOV and mouse sensitivity
-  - Difficulty (maze size scaling)
-  - Game mode: `play` or `demo`
-  - Language: `en` / `ru`
-- **Full-screen map view** (`M`) for navigation.
-- **Demo mode**: automatically finds a path and walks it to the goal.
+- **3D raycasting** in terminal (curses)
+- **Multiple renderers**
+  - `text` — classic character-based
+  - `half` — half-block rendering (2 vertical “pixels” per cell)
+  - `braille` — braille dots (2×4 “pixels” per cell, requires UTF-8)
+  - `auto` — picks the best available renderer
+- **In-game settings menu (ESC)**
+  - Change renderer, difficulty, language, HUD mode, mouse look, FOV, shadows, etc.
+- **Modes**
+  - `default` — normal walking
+  - `free` — flight mode (vertical movement) with basic collision
+  - `demo` variants — auto-solve / auto-walk the maze
+- **Camera controls**
+  - Runtime FOV adjustment (1/2/3)
+  - Camera controls via arrow keys + reset hotkey
+- **Optional shading**
+  - Toggle shadows on/off for readability and performance
 
 ## Requirements
 
-- Python 3 (recommended: 3.8+)
-- A Unix-like terminal with `curses` support (Linux/macOS are the best experience)
-- For best visuals: UTF-8 + 256 colors terminal
+- Python 3.9+ (likely works on older 3.x too)
+- A terminal that supports `curses`
+- Recommended:
+  - UTF-8 locale for braille renderer
+  - 256-color terminal for best gradients
+  - Mouse reporting support (e.g., kitty) if using mouse-look
 
-### Windows notes
-Python on Windows does not ship with `curses` by default. You may need:
+## Run
 
-```bash
-pip install windows-curses
-```
-
-## Quick start
+If your file is named `main.py`:
 
 ```bash
 python3 main.py
 ```
 
-Tip: you can rename the file to `maze3d.py` if you prefer—entrypoint is the script itself.
+Or if you renamed it:
 
-## Controls
+```bash
+python3 maze.py
+```
 
-In game:
+## Controls (Default)
 
-- `W` / `S` — move forward / back
-- `A` / `D` — turn left / right
-- `M` — map
-- `ESC` — settings / menu
-- `Q` — quit (with Y/N confirmation)
+- **W / S** — move forward / backward  
+- **A / D** — turn left / right  
+- **Arrow keys** — camera control  
+- **R** — reset camera orientation  
+- **M** — map  
+- **1 / 2 / 3** — decrease / increase / reset FOV  
+- **4** — toggle shadows  
+- **ESC** — settings menu  
+- **Q** — quit (with confirmation)
 
-## Render modes
+### Free mode
 
-- `text` — classic characters (most compatible)
-- `half` — half-block renderer (higher vertical resolution)
-- `braille` — braille dots renderer (2x4 “pixels” per cell; requires UTF-8)
-- `auto` — selects the best available based on terminal capabilities
+- **Space** — move up  
+- **X** — move down
 
-## Demo mode
+## Tips / Troubleshooting
 
-Enable **Demo** in the start menu to showcase the renderers.
-The game will compute a solution path (BFS on the grid) and automatically walk to the exit.
+- If braille renderer looks broken, ensure your locale is UTF-8:
 
-## Troubleshooting
+  ```bash
+  locale
+  ```
 
-- **“Terminal too small”**: enlarge the terminal window.
-- **Broken characters / blocks**: ensure the terminal uses UTF-8 and a font with block/braille glyphs.
-- **No colors**: some terminals report limited color support; switch Color to `off` or try another terminal.
-- **Mouse look not working**: depends on terminal support for mouse motion reporting.
+- If colors are odd, try a different terminal theme or disable color in the menu.
+- If mouse look does not work, your terminal might not support mouse motion events.
+  Switch mouse look to `off` in settings.
 
-## Project layout
+## Development Notes
 
-- `main.py` — the full game (single-file implementation)
+- The project is intentionally kept as a single script for easy distribution.
+- The menu is designed to be usable without a mouse and work on narrow terminals.
