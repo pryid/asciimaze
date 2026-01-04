@@ -45,6 +45,11 @@ Free mode:
 - `maze3d/maze.py` — maze generation + grid/collision helpers
 - `maze3d/raycast.py` — raycasting + projection helpers
 - `maze3d/movement.py` — movement + demo/autosolve logic
-- `maze3d/render.py` — all renderers + minimap
+- `maze3d/render.py` — rendering facade (dispatcher)
+- `maze3d/render_common.py` — HUD + renderer selection helpers
+- `maze3d/render_text.py` — text renderer
+- `maze3d/render_halfblock.py` — half-block renderer
+- `maze3d/render_braille.py` — braille renderer
+- `maze3d/render_map.py` — minimap renderer
 - `maze3d/ui.py` — menu + prompts + win screen
 - `maze3d/game.py` — main loop + `run()`
