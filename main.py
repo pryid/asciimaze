@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-3D лабиринт в терминале (raycasting) + меню по ESC + выбор рендеров.
+3D maze in terminal (raycasting) with settings menu, multiple renderers, demo/auto-solve mode,
+and localization (English default, Russian optional).
 
-Фичи:
-- UTF-8/цвета автодетект + режим совместимости.
-- Рендеры: text / half-block / braille (и auto).
-- Псевдографическое меню (ESC) с настройками графики и подсказками.
-- HUD по умолчанию только первые 5 секунд (настраивается в меню).
-- M — читаемая полноэкранная карта.
-- Q — выход с подтверждением.
-- Mouse look (best-effort) через terminal mouse motion events (kitty обычно умеет).
+Controls (in game):
+- W/S: move forward/back
+- A/D: turn left/right
+- M: map
+- ESC: menu
+- Q: quit (with Y/N confirmation)
 
-Запуск:
-  python3 maze3d.py
+Render modes:
+- text: classic chars
+- half: half-block (2 vertical pixels per cell)
+- braille: braille dots (2x4 pixels per cell; UTF-8)
+- auto: best available
+
+Demo mode:
+- If enabled from the start menu, the game finds a path and walks it automatically.
 """
 
 from __future__ import annotations
@@ -25,14 +30,16 @@ import os
 import random
 import sys
 import time
+from collections import deque
 from dataclasses import dataclass
-from typing import List, Tuple, Optional, Literal
+from typing import Dict, List, Optional, Tuple, Literal, Callable
 
 WALL = "#"
 OPEN = " "
 
 FOV_DEFAULT = math.pi / 3.0
 MAX_RAY_DIST = 40.0
+
 MOVE_SPEED = 3.2
 ROT_SPEED = 2.2
 HOLD_TIMEOUT = 0.14
@@ -41,9 +48,223 @@ MOUSE_SENS_DEFAULT = 0.012
 
 ASCII_WALL_SHADES = "@%#*+=-:."
 ASCII_FLOOR_SHADES = ".,-~:;=!*#$@"
-
 UNICODE_FLOOR_CHARS = "·⋅∘°ˑ"
+
 RenderMode = Literal["auto", "text", "half", "braille"]
+GameMode = Literal["play", "demo"]
+
+
+LOCALES: Dict[str, Dict[str, str]] = {
+    "en": {
+        # Language names
+        "lang_name": "English",
+        "lang_label": "Language",
+
+        # Generic / prompts
+        "msg_too_small": "Terminal too small. Enlarge it.",
+        "prompt_yes_no": "{prompt} Y/N ",
+        "prompt_exit": "Exit the game?",
+        "prompt_quit_short": "Quit?",
+        "prompt_restart_short": "Restart?",
+
+        # Menu chrome
+        "menu_title": " SETTINGS / MENU ",
+        "menu_terminal": "Terminal: {caps}",
+        "menu_footer": "←/→: change   Enter: select   ESC: back",
+        "menu_small": "Terminal too small for the menu. Enlarge it.",
+        "menu_small_hint": "Enter: continue   Q: quit",
+
+        # Menu items (labels)
+        "menu_action_start": "Start",
+        "menu_action_resume": "Resume",
+        "menu_action_restart": "Restart",
+        "menu_action_quit": "Quit",
+
+        "menu_item_mode": "Mode",
+        "menu_item_difficulty": "Difficulty",
+        "menu_item_render": "Renderer",
+        "menu_item_colors": "Color",
+        "menu_item_unicode": "Unicode",
+        "menu_item_mouse": "Mouse look",
+        "menu_item_hud": "HUD",
+        "menu_item_fov": "FOV",
+        "menu_item_language": "Language",
+
+        # Menu selection / help
+        "help_selected": "Selected: {label}",
+        "help_nav_title": "Navigation:",
+        "help_nav_updown": "  ↑/↓ or W/S — select",
+        "help_nav_leftright": "  ←/→ or A/D — change",
+        "help_nav_enter": "  Enter/Space — apply",
+        "help_nav_esc": "  ESC — close",
+        "help_in_game": "In game: W/S move, A/D turn, M map, ESC menu, Q quit",
+
+        "help_render_title": "Render modes:",
+        "help_render_text": "  text    — fast/simple",
+        "help_render_half": "  half    — half blocks (smoother)",
+        "help_render_braille": "  braille — max detail (UTF-8)",
+        "help_render_auto": "  auto    — best available",
+
+        "help_hud_title": "HUD:",
+        "help_hud_auto5": "  auto5 — first 5 seconds",
+        "help_hud_always": "  always — always visible",
+        "help_hud_off": "  off — hidden",
+
+        "help_mouse_title": "Mouse look:",
+        "help_mouse_desc1": "  Needs mouse motion events (kitty often supports).",
+        "help_mouse_desc2": "  If it does not work — set to off.",
+
+        "help_mode_title": "Mode:",
+        "help_mode_play": "  play — you control the player",
+        "help_mode_demo": "  demo — auto-solver walks the maze",
+
+        # Options (display)
+        "opt_auto": "auto",
+        "opt_on": "on",
+        "opt_off": "off",
+        "opt_text": "text",
+        "opt_half": "half",
+        "opt_braille": "braille",
+        "opt_auto5": "auto5",
+        "opt_always": "always",
+        "opt_play": "play",
+        "opt_demo": "demo",
+
+        # Capabilities tags
+        "cap_utf8_ok": "UTF-8✓",
+        "cap_utf8_no": "UTF-8×",
+        "cap_color_256": "256c",
+        "cap_color": "color",
+        "cap_mono": "mono",
+        "cap_mouse_ok": "mouse✓",
+        "cap_mouse_no": "mouse×",
+        "warn_mouse": "(!)",
+
+        # HUD / map / win
+        "hud_line1": "W/S move  A/D turn  M map  ESC menu  Q quit",
+        "hud_line2": "Diff:{diff:3d}  To exit:{dist:6.1f}  Render:{render}  {tags}",
+        "tag_ascii": "ASCII",
+        "tag_utf8": "UTF-8",
+        "tag_color": "color",
+        "tag_mono": "mono",
+        "tag_mouse": "mouse",
+        "tag_demo": "DEMO",
+
+        "map_title": "MAP — M back  ESC menu  Q quit",
+
+        "win_title": "You found the exit!",
+        "win_time": "Time: {sec:.1f}s",
+        "win_press_key": "Press any key…",
+        "win_demo_next": "Demo: next maze…",
+    },
+    "ru": {
+        "lang_name": "Русский",
+        "lang_label": "Язык",
+
+        "msg_too_small": "Окно слишком маленькое. Увеличьте терминал.",
+        "prompt_yes_no": "{prompt} Y/N ",
+        "prompt_exit": "Выйти из игры?",
+        "prompt_quit_short": "Выйти?",
+        "prompt_restart_short": "Перезапуск?",
+
+        "menu_title": " НАСТРОЙКИ / МЕНЮ ",
+        "menu_terminal": "Терминал: {caps}",
+        "menu_footer": "←/→: изменить   Enter: выбрать   ESC: назад",
+        "menu_small": "Окно слишком маленькое для меню. Увеличьте терминал.",
+        "menu_small_hint": "Enter: продолжить   Q: выйти",
+
+        "menu_action_start": "Начать",
+        "menu_action_resume": "Продолжить",
+        "menu_action_restart": "Перезапуск",
+        "menu_action_quit": "Выход",
+
+        "menu_item_mode": "Режим",
+        "menu_item_difficulty": "Сложность",
+        "menu_item_render": "Рендер",
+        "menu_item_colors": "Цвет",
+        "menu_item_unicode": "Unicode",
+        "menu_item_mouse": "Мышь",
+        "menu_item_hud": "HUD",
+        "menu_item_fov": "FOV",
+        "menu_item_language": "Язык",
+
+        "help_selected": "Выбрано: {label}",
+        "help_nav_title": "Навигация:",
+        "help_nav_updown": "  ↑/↓ или W/S — выбор",
+        "help_nav_leftright": "  ←/→ или A/D — изменить",
+        "help_nav_enter": "  Enter/Space — применить",
+        "help_nav_esc": "  ESC — закрыть",
+        "help_in_game": "В игре: W/S ход, A/D поворот, M карта, ESC меню, Q выход",
+
+        "help_render_title": "Рендеры:",
+        "help_render_text": "  text    — быстро/просто",
+        "help_render_half": "  half    — полублоки (гладче)",
+        "help_render_braille": "  braille — максимум деталей (UTF-8)",
+        "help_render_auto": "  auto    — лучший доступный",
+
+        "help_hud_title": "HUD:",
+        "help_hud_auto5": "  auto5 — первые 5 секунд",
+        "help_hud_always": "  always — всегда",
+        "help_hud_off": "  off — скрыт",
+
+        "help_mouse_title": "Поворот мышью:",
+        "help_mouse_desc1": "  Нужны события движения (kitty обычно умеет).",
+        "help_mouse_desc2": "  Если не работает — выключи (off).",
+
+        "help_mode_title": "Режим:",
+        "help_mode_play": "  play — управление вручную",
+        "help_mode_demo": "  demo — авто-прохождение лабиринта",
+
+        "opt_auto": "auto",
+        "opt_on": "on",
+        "opt_off": "off",
+        "opt_text": "text",
+        "opt_half": "half",
+        "opt_braille": "braille",
+        "opt_auto5": "auto5",
+        "opt_always": "always",
+        "opt_play": "play",
+        "opt_demo": "demo",
+
+        "cap_utf8_ok": "UTF-8✓",
+        "cap_utf8_no": "UTF-8×",
+        "cap_color_256": "256c",
+        "cap_color": "color",
+        "cap_mono": "mono",
+        "cap_mouse_ok": "мышь✓",
+        "cap_mouse_no": "мышь×",
+        "warn_mouse": "(!)",
+
+        "hud_line1": "W/S:движ  A/D:поворот  M:карта  ESC:меню  Q:выход",
+        "hud_line2": "Сложн:{diff:3d}  До выхода:{dist:6.1f}  Рендер:{render}  {tags}",
+        "tag_ascii": "ASCII",
+        "tag_utf8": "UTF-8",
+        "tag_color": "цвет",
+        "tag_mono": "моно",
+        "tag_mouse": "мышь",
+        "tag_demo": "ДЕМО",
+
+        "map_title": "КАРТА — M:назад  ESC:меню  Q:выход",
+
+        "win_title": "Вы нашли выход!",
+        "win_time": "Время: {sec:.1f} c",
+        "win_press_key": "Нажмите любую клавишу…",
+        "win_demo_next": "Демо: следующий лабиринт…",
+    },
+}
+
+
+def make_tr(lang: str) -> Callable[[str], str]:
+    def tr(key: str, **kwargs) -> str:
+        table = LOCALES.get(lang) or LOCALES["en"]
+        s = table.get(key) or LOCALES["en"].get(key) or key
+        if kwargs:
+            try:
+                return s.format(**kwargs)
+            except Exception:
+                return s
+        return s
+    return tr
 
 
 @dataclass
@@ -56,7 +277,10 @@ class Player:
 @dataclass
 class Settings:
     difficulty: int = 30
-    render_mode: RenderMode = "auto"     # auto/text/half/braille
+    game_mode: GameMode = "play"           # play/demo
+    language: str = "en"                   # default English
+
+    render_mode: RenderMode = "auto"
     colors: Literal["auto", "on", "off"] = "auto"
     unicode: Literal["auto", "on", "off"] = "auto"
     mouse_look: Literal["auto", "on", "off"] = "auto"
@@ -129,6 +353,13 @@ class Style:
         return UNICODE_FLOOR_CHARS[idx]
 
 
+def safe_addstr(stdscr, y: int, x: int, s: str, attr: int = 0) -> None:
+    try:
+        stdscr.addstr(y, x, s, attr)
+    except curses.error:
+        pass
+
+
 def clamp(v: float, lo: float, hi: float) -> float:
     return lo if v < lo else hi if v > hi else v
 
@@ -151,19 +382,11 @@ def prefer_utf8() -> bool:
     return ("UTF-8" in enc) or ("UTF8" in enc)
 
 
-def safe_addstr(stdscr, y: int, x: int, s: str, attr: int = 0) -> None:
-    try:
-        stdscr.addstr(y, x, s, attr)
-    except curses.error:
-        pass
-
-
 def init_style(stdscr) -> Style:
     unicode_ok = prefer_utf8()
 
     colors_ok = False
     color_mode: Literal["none", "basic", "256"] = "none"
-
     wall_pairs: List[int] = []
     floor_pairs: List[int] = []
     hud_pair = 0
@@ -202,8 +425,8 @@ def init_style(stdscr) -> Style:
         bg = -1
 
         if color_mode == "256":
-            wall_colors = list(range(255, 231, -1))  # 24 levels
-            floor_colors = list(range(244, 235, -1))  # 9 levels
+            wall_colors = list(range(255, 231, -1))  # 24
+            floor_colors = list(range(244, 235, -1))  # 9
 
             for fg in wall_colors:
                 if pid >= pairs:
@@ -429,11 +652,13 @@ def player_dir_glyph(style: Style, ang: float) -> str:
     return "◄"
 
 
-def confirm_yes_no(stdscr, prompt: str) -> bool:
+def confirm_yes_no(stdscr, tr: Callable[[str], str], prompt_key: str) -> bool:
+    prompt = tr(prompt_key)
     h, w = stdscr.getmaxyx()
-    line = (prompt + " Y/N ").ljust(max(0, w - 1))
+    line = tr("prompt_yes_no", prompt=prompt)
     safe_addstr(stdscr, h - 1, 0, line[: max(0, w - 1)], curses.A_REVERSE)
     stdscr.refresh()
+
     stdscr.nodelay(False)
     try:
         while True:
@@ -464,21 +689,158 @@ def set_mouse_tracking(enable: bool) -> bool:
         return False
 
 
-# -------------------- Renderers --------------------
+# -------------------- Pathfinding (demo mode) --------------------
 
-def draw_hud(stdscr, player: Player, goal_xy: Tuple[int, int], settings: Settings, style: Style, mouse_active: bool) -> None:
+def find_path_cells(grid: List[str], start: Tuple[int, int], goal: Tuple[int, int]) -> List[Tuple[int, int]]:
+    """BFS shortest path on open tiles; returns list of (x,y) including start and goal."""
+    H = len(grid)
+    W = len(grid[0]) if H else 0
+    sx, sy = start
+    gx, gy = goal
+    if not (0 <= sx < W and 0 <= sy < H and 0 <= gx < W and 0 <= gy < H):
+        return [start]
+
+    q = deque([start])
+    prev: Dict[Tuple[int, int], Optional[Tuple[int, int]]] = {start: None}
+
+    while q:
+        x, y = q.popleft()
+        if (x, y) == goal:
+            break
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < W and 0 <= ny < H and grid[ny][nx] == OPEN and (nx, ny) not in prev:
+                prev[(nx, ny)] = (x, y)
+                q.append((nx, ny))
+
+    if goal not in prev:
+        return [start]
+
+    path: List[Tuple[int, int]] = []
+    cur: Optional[Tuple[int, int]] = goal
+    while cur is not None:
+        path.append(cur)
+        cur = prev[cur]
+    path.reverse()
+    return path
+
+
+def demo_step(grid: List[str], player: Player, path: List[Tuple[int, int]], idx: int, dt: float) -> int:
+    """
+    Advance the player along the path (grid cells).
+    Returns updated index (the last reached path cell).
+    """
+    if not path or idx >= len(path) - 1:
+        return idx
+
+    cur_cell = (int(player.x), int(player.y))
+
+    while idx + 1 < len(path) and cur_cell == path[idx + 1]:
+        idx += 1
+        if idx >= len(path) - 1:
+            return idx
+
+    nxt = path[idx + 1]
+    dx = nxt[0] - cur_cell[0]
+    dy = nxt[1] - cur_cell[1]
+
+    if dx > 0:
+        desired = 0.0
+    elif dx < 0:
+        desired = math.pi
+    elif dy > 0:
+        desired = math.pi / 2.0
+    else:
+        desired = -math.pi / 2.0
+
+    diff = normalize_angle(desired - player.ang)
+    max_rot = ROT_SPEED * dt
+
+    if abs(diff) > 0.07:
+        player.ang = normalize_angle(player.ang + clamp(diff, -max_rot, max_rot))
+        return idx
+
+    # Keep centered in corridors
+    if dx != 0:
+        target_y = cur_cell[1] + 0.5
+        player.y += (target_y - player.y) * min(1.0, dt * 8.0)
+    if dy != 0:
+        target_x = cur_cell[0] + 0.5
+        player.x += (target_x - player.x) * min(1.0, dt * 8.0)
+
+    move = MOVE_SPEED * dt
+    dxm = math.cos(player.ang) * move
+    dym = math.sin(player.ang) * move
+
+    nx = player.x + dxm
+    ny = player.y + dym
+
+    if not is_wall(grid, int(nx), int(player.y)):
+        player.x = nx
+    if not is_wall(grid, int(player.x), int(ny)):
+        player.y = ny
+
+    return idx
+
+
+# -------------------- Renderer helpers --------------------
+
+def option_display(tr: Callable[[str], str], key: str, value: str) -> str:
+    mapping = {
+        "auto": "opt_auto",
+        "on": "opt_on",
+        "off": "opt_off",
+        "text": "opt_text",
+        "half": "opt_half",
+        "braille": "opt_braille",
+        "auto5": "opt_auto5",
+        "always": "opt_always",
+        "play": "opt_play",
+        "demo": "opt_demo",
+    }
+    if key == "language":
+        return (LOCALES.get(value) or LOCALES["en"]).get("lang_name", value)
+    return tr(mapping.get(value, value))
+
+
+def draw_hud(
+    stdscr,
+    tr: Callable[[str], str],
+    player: Player,
+    goal_xy: Tuple[int, int],
+    settings: Settings,
+    style: Style,
+    mouse_active: bool,
+) -> None:
     h, w = stdscr.getmaxyx()
     gx, gy = goal_xy
     dist_goal = math.hypot((gx + 0.5) - player.x, (gy + 0.5) - player.y)
 
-    line1 = "W/S:движ  A/D:поворот  M:карта  ESC:меню  Q:выход"
-    parts = [
-        ("UTF-8" if style.unicode_ok else "ASCII"),
-        ("256c" if style.colors_ok and style.color_mode == "256" else "color" if style.colors_ok else "mono"),
-        ("mouse" if mouse_active else ""),
-    ]
-    mode = "+".join([p for p in parts if p])
-    line2 = f"Сложн:{settings.difficulty:3d}  До выхода:{dist_goal:6.1f}  Рендер:{settings.render_mode}  {mode}"
+    line1 = tr("hud_line1")
+
+    tags = []
+    tags.append(tr("tag_utf8") if style.unicode_ok else tr("tag_ascii"))
+    if style.colors_ok and style.color_mode == "256":
+        tags.append(tr("cap_color_256"))
+    elif style.colors_ok:
+        tags.append(tr("tag_color"))
+    else:
+        tags.append(tr("tag_mono"))
+    if mouse_active:
+        tags.append(tr("tag_mouse"))
+    if settings.game_mode == "demo":
+        tags.append(tr("tag_demo"))
+
+    tag_str = "+".join(tags)
+    render_disp = option_display(tr, "render_mode", settings.render_mode)
+
+    line2 = tr(
+        "hud_line2",
+        diff=settings.difficulty,
+        dist=dist_goal,
+        render=render_disp,
+        tags=tag_str,
+    )
 
     attr = curses.A_BOLD
     if style.colors_ok and style.hud_pair:
@@ -489,6 +851,7 @@ def draw_hud(stdscr, player: Player, goal_xy: Tuple[int, int], settings: Setting
 
 def render_text(
     stdscr,
+    tr: Callable[[str], str],
     grid: List[str],
     player: Player,
     goal_xy: Tuple[int, int],
@@ -500,7 +863,7 @@ def render_text(
     h, w = stdscr.getmaxyx()
     if h < 8 or w < 24:
         stdscr.erase()
-        safe_addstr(stdscr, 0, 0, "Окно слишком маленькое. Увеличьте терминал.")
+        safe_addstr(stdscr, 0, 0, tr("msg_too_small"))
         return
 
     hud_lines = 2 if hud_visible else 0
@@ -554,11 +917,12 @@ def render_text(
             safe_addstr(stdscr, y, start, "".join(buf), attr)
 
     if hud_visible:
-        draw_hud(stdscr, player, goal_xy, settings, style, mouse_active)
+        draw_hud(stdscr, tr, player, goal_xy, settings, style, mouse_active)
 
 
 def render_halfblock(
     stdscr,
+    tr: Callable[[str], str],
     grid: List[str],
     player: Player,
     goal_xy: Tuple[int, int],
@@ -570,7 +934,7 @@ def render_halfblock(
     h, w = stdscr.getmaxyx()
     if h < 8 or w < 24:
         stdscr.erase()
-        safe_addstr(stdscr, 0, 0, "Окно слишком маленькое. Увеличьте терминал.")
+        safe_addstr(stdscr, 0, 0, tr("msg_too_small"))
         return
 
     hud_lines = 2 if hud_visible else 0
@@ -631,10 +995,9 @@ def render_halfblock(
             safe_addstr(stdscr, y, start, "".join(buf), attr)
 
     if hud_visible:
-        draw_hud(stdscr, player, goal_xy, settings, style, mouse_active)
+        draw_hud(stdscr, tr, player, goal_xy, settings, style, mouse_active)
 
 
-# Braille dot mapping: (col,row)->bit
 _BRAILLE_BITS = {
     (0, 0): 0x01, (0, 1): 0x02, (0, 2): 0x04, (0, 3): 0x40,
     (1, 0): 0x08, (1, 1): 0x10, (1, 2): 0x20, (1, 3): 0x80,
@@ -643,6 +1006,7 @@ _BRAILLE_BITS = {
 
 def render_braille(
     stdscr,
+    tr: Callable[[str], str],
     grid: List[str],
     player: Player,
     goal_xy: Tuple[int, int],
@@ -652,13 +1016,13 @@ def render_braille(
     mouse_active: bool,
 ) -> None:
     if not style.unicode_ok:
-        render_text(stdscr, grid, player, goal_xy, settings, style, hud_visible, mouse_active)
+        render_text(stdscr, tr, grid, player, goal_xy, settings, style, hud_visible, mouse_active)
         return
 
     h, w = stdscr.getmaxyx()
     if h < 8 or w < 24:
         stdscr.erase()
-        safe_addstr(stdscr, 0, 0, "Окно слишком маленькое. Увеличьте терминал.")
+        safe_addstr(stdscr, 0, 0, tr("msg_too_small"))
         return
 
     hud_lines = 2 if hud_visible else 0
@@ -726,7 +1090,7 @@ def render_braille(
             safe_addstr(stdscr, y, start, "".join(buf), attr)
 
     if hud_visible:
-        draw_hud(stdscr, player, goal_xy, settings, style, mouse_active)
+        draw_hud(stdscr, tr, player, goal_xy, settings, style, mouse_active)
 
 
 def choose_renderer(settings: Settings, style: Style) -> RenderMode:
@@ -739,6 +1103,7 @@ def choose_renderer(settings: Settings, style: Style) -> RenderMode:
 
 def render_scene(
     stdscr,
+    tr: Callable[[str], str],
     renderer: RenderMode,
     grid: List[str],
     player: Player,
@@ -749,19 +1114,20 @@ def render_scene(
     mouse_active: bool,
 ) -> None:
     if renderer == "text":
-        render_text(stdscr, grid, player, goal_xy, settings, style, hud_visible, mouse_active)
+        render_text(stdscr, tr, grid, player, goal_xy, settings, style, hud_visible, mouse_active)
     elif renderer == "half":
-        render_halfblock(stdscr, grid, player, goal_xy, settings, style, hud_visible, mouse_active)
+        render_halfblock(stdscr, tr, grid, player, goal_xy, settings, style, hud_visible, mouse_active)
     elif renderer == "braille":
-        render_braille(stdscr, grid, player, goal_xy, settings, style, hud_visible, mouse_active)
+        render_braille(stdscr, tr, grid, player, goal_xy, settings, style, hud_visible, mouse_active)
     else:
-        render_text(stdscr, grid, player, goal_xy, settings, style, hud_visible, mouse_active)
+        render_text(stdscr, tr, grid, player, goal_xy, settings, style, hud_visible, mouse_active)
 
 
 # -------------------- Map view --------------------
 
 def render_map(
     stdscr,
+    tr: Callable[[str], str],
     grid: List[str],
     player: Player,
     goal_xy: Tuple[int, int],
@@ -771,7 +1137,7 @@ def render_map(
     h, w = stdscr.getmaxyx()
     if h < 8 or w < 24:
         stdscr.erase()
-        safe_addstr(stdscr, 0, 0, "Окно слишком маленькое. Увеличьте терминал.")
+        safe_addstr(stdscr, 0, 0, tr("msg_too_small"))
         return
 
     header_lines = 1
@@ -781,7 +1147,7 @@ def render_map(
     map_h = len(grid)
     map_w = len(grid[0])
 
-    title = "КАРТА — M:назад  ESC:меню  Q:выход"
+    title = tr("map_title")
     hdr_attr = curses.A_REVERSE
     if style.colors_ok and style.hud_pair:
         hdr_attr |= curses.color_pair(style.hud_pair)
@@ -910,17 +1276,17 @@ def render_map(
 
 def box_chars(unicode_ok: bool):
     if unicode_ok:
-        return {"tl":"┌","tr":"┐","bl":"└","br":"┘","h":"─","v":"│"}
-    return {"tl":"+","tr":"+","bl":"+","br":"+","h":"-","v":"|"}
+        return {"tl": "┌", "tr": "┐", "bl": "└", "br": "┘", "h": "─", "v": "│"}
+    return {"tl": "+", "tr": "+", "bl": "+", "br": "+", "h": "-", "v": "|"}
 
 
 def draw_box(stdscr, y: int, x: int, h: int, w: int, unicode_ok: bool, attr: int = 0) -> None:
     bc = box_chars(unicode_ok)
-    safe_addstr(stdscr, y, x, bc["tl"] + bc["h"]*(w-2) + bc["tr"], attr)
-    for yy in range(y+1, y+h-1):
+    safe_addstr(stdscr, y, x, bc["tl"] + bc["h"] * (w - 2) + bc["tr"], attr)
+    for yy in range(y + 1, y + h - 1):
         safe_addstr(stdscr, yy, x, bc["v"], attr)
-        safe_addstr(stdscr, yy, x+w-1, bc["v"], attr)
-    safe_addstr(stdscr, y+h-1, x, bc["bl"] + bc["h"]*(w-2) + bc["br"], attr)
+        safe_addstr(stdscr, yy, x + w - 1, bc["v"], attr)
+    safe_addstr(stdscr, y + h - 1, x, bc["bl"] + bc["h"] * (w - 2) + bc["br"], attr)
 
 
 def cycle_value(values: List[str], cur: str, delta: int) -> str:
@@ -941,48 +1307,59 @@ def run_menu(
     stdscr.nodelay(False)
     sel = 0
 
-    items = []
-    if mode == "pause":
-        items.append(("Продолжить", "action", "resume"))
-    else:
-        items.append(("Начать игру", "action", "start"))
-
-    items += [
-        ("Сложность", "range", "difficulty"),
-        ("Рендер", "choice", "render_mode"),
-        ("Цвет", "choice", "colors"),
-        ("Unicode", "choice", "unicode"),
-        ("Mouse look", "choice", "mouse_look"),
-        ("HUD", "choice", "hud"),
-        ("FOV", "range", "fov"),
-    ]
-
-    if mode == "pause":
-        items.append(("Перезапуск", "action", "restart"))
-    items.append(("Выход", "action", "quit"))
-
     render_choices = ["auto", "text", "half", "braille"]
     onoffauto = ["auto", "on", "off"]
     hud_choices = ["auto5", "always", "off"]
+    mode_choices = ["play", "demo"]
+
+    lang_choices = list(LOCALES.keys())
+    if "en" in lang_choices:
+        lang_choices = ["en"] + [l for l in lang_choices if l != "en"]
+
+    items: List[Tuple[str, str, str]] = []
+    if mode == "pause":
+        items.append(("menu_action_resume", "action", "resume"))
+    else:
+        items.append(("menu_action_start", "action", "start"))
+
+    items += [
+        ("menu_item_mode", "choice", "game_mode"),
+        ("menu_item_difficulty", "range", "difficulty"),
+        ("menu_item_render", "choice", "render_mode"),
+        ("menu_item_colors", "choice", "colors"),
+        ("menu_item_unicode", "choice", "unicode"),
+        ("menu_item_mouse", "choice", "mouse_look"),
+        ("menu_item_hud", "choice", "hud"),
+        ("menu_item_fov", "range", "fov"),
+        ("menu_item_language", "choice", "language"),
+    ]
+
+    if mode == "pause":
+        items.append(("menu_action_restart", "action", "restart"))
+    items.append(("menu_action_quit", "action", "quit"))
 
     while True:
+        tr = make_tr(settings.language)
+
         stdscr.erase()
         H, W = stdscr.getmaxyx()
 
         if H < 14 or W < 44:
-            safe_addstr(stdscr, 0, 0, "Окно слишком маленькое для меню. Увеличьте терминал.")
-            safe_addstr(stdscr, 2, 0, "Enter: продолжить   Q: выйти")
+            safe_addstr(stdscr, 0, 0, tr("menu_small"))
+            safe_addstr(stdscr, 2, 0, tr("menu_small_hint"))
             stdscr.refresh()
             ch = stdscr.getch()
             if ch in (ord("q"), ord("Q")):
-                if confirm_yes_no(stdscr, "Выйти?"):
+                if confirm_yes_no(stdscr, tr, "prompt_quit_short"):
+                    stdscr.nodelay(True)
                     return "quit"
             if ch in (10, 13, curses.KEY_ENTER):
+                stdscr.nodelay(True)
                 return "resume" if mode == "pause" else "start"
             continue
 
-        box_w = min(86, W - 4)
-        box_h = min(26, H - 4)
+        box_w = min(88, W - 4)
+        box_h = min(28, H - 4)
         box_x = (W - box_w) // 2
         box_y = (H - box_h) // 2
 
@@ -992,14 +1369,20 @@ def run_menu(
             border_attr |= curses.color_pair(base_style.hud_pair)
 
         draw_box(stdscr, box_y, box_x, box_h, box_w, unicode_ui, border_attr)
-        title = " НАСТРОЙКИ / МЕНЮ " if unicode_ui else " SETTINGS / MENU "
+        title = tr("menu_title")
         safe_addstr(stdscr, box_y, box_x + 2, title[: box_w - 4], border_attr | curses.A_BOLD)
 
         cap_parts = []
-        cap_parts.append("UTF-8✓" if caps.unicode_ok else "UTF-8×")
-        cap_parts.append("256c" if caps.colors_ok and caps.color_mode == "256" else ("color" if caps.colors_ok else "mono"))
-        cap_parts.append("mouse✓" if caps.mouse_motion_ok else "mouse×")
-        caps_line = "Терминал: " + ", ".join(cap_parts)
+        cap_parts.append(tr("cap_utf8_ok") if caps.unicode_ok else tr("cap_utf8_no"))
+        if caps.colors_ok and caps.color_mode == "256":
+            cap_parts.append(tr("cap_color_256"))
+        elif caps.colors_ok:
+            cap_parts.append(tr("cap_color"))
+        else:
+            cap_parts.append(tr("cap_mono"))
+        cap_parts.append(tr("cap_mouse_ok") if caps.mouse_motion_ok else tr("cap_mouse_no"))
+
+        caps_line = tr("menu_terminal", caps=", ".join(cap_parts))
         safe_addstr(stdscr, box_y + 1, box_x + 2, caps_line[: box_w - 4], curses.A_DIM)
 
         left_w = int(box_w * 0.56)
@@ -1015,7 +1398,9 @@ def run_menu(
         list_h = box_y + box_h - 4 - top_y + 1
         sel = max(0, min(sel, len(items) - 1))
 
-        for i, (label, kind, key) in enumerate(items):
+        label_width = 12
+
+        for i, (label_key, kind, key) in enumerate(items):
             y = top_y + i
             if y >= top_y + list_h:
                 break
@@ -1024,7 +1409,10 @@ def run_menu(
             pad = "  "
             attr = curses.A_REVERSE if is_sel else curses.A_NORMAL
 
+            label = tr(label_key)
+
             value = ""
+            warn = ""
             if kind == "range":
                 if key == "difficulty":
                     value = f"[ {settings.difficulty:3d} ]"
@@ -1032,64 +1420,73 @@ def run_menu(
                     value = f"[ {settings.fov * 180.0 / math.pi:5.1f}° ]"
             elif kind == "choice":
                 cur = getattr(settings, key)
-                value = f"[ {cur} ]"
-                if key == "mouse_look" and not caps.mouse_motion_ok:
-                    value += " (!)"
+                disp = option_display(tr, key, str(cur))
+                value = f"[ {disp} ]"
+                if key == "mouse_look" and not caps.mouse_motion_ok and str(cur) != "off":
+                    warn = " " + tr("warn_mouse")
 
-            line = (prefix if is_sel else pad) + f"{label:<10} {value}"
+            line = (prefix if is_sel else pad) + f"{label:<{label_width}} {value}{warn}"
             safe_addstr(stdscr, y, left_x, line[: left_w], attr)
 
-        label, kind, key = items[sel]
+        label_key, kind, key = items[sel]
+        label = tr(label_key)
+
         help_lines = [
-            f"Выбрано: {label}",
+            tr("help_selected", label=label),
             "",
-            "Навигация:",
-            "  ↑/↓ или W/S — выбор",
-            "  ←/→ или A/D — изменить",
-            "  Enter/Space — применить",
-            "  ESC — закрыть",
+            tr("help_nav_title"),
+            tr("help_nav_updown"),
+            tr("help_nav_leftright"),
+            tr("help_nav_enter"),
+            tr("help_nav_esc"),
             "",
-            "В игре: W/S ход, A/D поворот, M карта, ESC меню, Q выход",
+            tr("help_in_game"),
             "",
         ]
+
         if key == "render_mode":
             help_lines += [
-                "Рендеры:",
-                "  text    — быстро/простая графика",
-                "  half    — полублоки (гладкие края)",
-                "  braille — максимум детализации (UTF-8)",
-                "  auto    — лучший доступный",
+                tr("help_render_title"),
+                tr("help_render_text"),
+                tr("help_render_half"),
+                tr("help_render_braille"),
+                tr("help_render_auto"),
             ]
         elif key == "hud":
             help_lines += [
-                "HUD:",
-                "  auto5 — первые 5 секунд",
-                "  always — всегда",
-                "  off — скрыт",
+                tr("help_hud_title"),
+                tr("help_hud_auto5"),
+                tr("help_hud_always"),
+                tr("help_hud_off"),
             ]
         elif key == "mouse_look":
             help_lines += [
-                "Mouse look:",
-                "  Нужны motion events (kitty обычно да).",
-                "  Если не работает — выключи (off).",
+                tr("help_mouse_title"),
+                tr("help_mouse_desc1"),
+                tr("help_mouse_desc2"),
+            ]
+        elif key == "game_mode":
+            help_lines += [
+                tr("help_mode_title"),
+                tr("help_mode_play"),
+                tr("help_mode_demo"),
             ]
 
         for i, line in enumerate(help_lines):
             yy = top_y + i
             if yy >= box_y + box_h - 2:
                 break
-            safe_addstr(stdscr, yy, right_x, line[: right_w], curses.A_DIM if i != 0 else curses.A_BOLD)
+            safe_addstr(stdscr, yy, right_x, line[: right_w], curses.A_DIM if i not in (0,) else curses.A_BOLD)
 
-        footer = "←/→: изменить   Enter: выбрать   ESC: назад"
+        footer = tr("menu_footer")
         safe_addstr(stdscr, box_y + box_h - 2, box_x + 2, footer[: box_w - 4], curses.A_DIM)
 
         stdscr.refresh()
-
         ch = stdscr.getch()
 
         if ch == 27:  # ESC
             if mode == "start":
-                if confirm_yes_no(stdscr, "Выйти из игры?"):
+                if confirm_yes_no(stdscr, tr, "prompt_exit"):
                     stdscr.nodelay(True)
                     return "quit"
                 continue
@@ -1104,92 +1501,104 @@ def run_menu(
             continue
 
         if ch in (curses.KEY_LEFT, ord("a"), ord("A")):
-            label, kind, key = items[sel]
+            label_key, kind, key = items[sel]
             if kind == "range":
                 if key == "difficulty":
                     settings.difficulty = int(clamp(settings.difficulty - 1, 1, 100))
                 elif key == "fov":
                     settings.fov = clamp(settings.fov - math.radians(2.0), math.radians(40), math.radians(120))
             elif kind == "choice":
+                cur = str(getattr(settings, key))
                 if key == "render_mode":
-                    settings.render_mode = cycle_value(render_choices, settings.render_mode, -1)  # type: ignore
-                elif key == "colors":
-                    settings.colors = cycle_value(onoffauto, settings.colors, -1)  # type: ignore
-                elif key == "unicode":
-                    settings.unicode = cycle_value(onoffauto, settings.unicode, -1)  # type: ignore
-                elif key == "mouse_look":
-                    settings.mouse_look = cycle_value(onoffauto, settings.mouse_look, -1)  # type: ignore
+                    settings.render_mode = cycle_value(render_choices, cur, -1)  # type: ignore
+                elif key in ("colors", "unicode", "mouse_look"):
+                    setattr(settings, key, cycle_value(onoffauto, cur, -1))
                 elif key == "hud":
-                    settings.hud = cycle_value(hud_choices, settings.hud, -1)  # type: ignore
+                    settings.hud = cycle_value(hud_choices, cur, -1)  # type: ignore
+                elif key == "game_mode":
+                    settings.game_mode = cycle_value(mode_choices, cur, -1)  # type: ignore
+                elif key == "language":
+                    settings.language = cycle_value(lang_choices, cur, -1)
             continue
 
         if ch in (curses.KEY_RIGHT, ord("d"), ord("D")):
-            label, kind, key = items[sel]
+            label_key, kind, key = items[sel]
             if kind == "range":
                 if key == "difficulty":
                     settings.difficulty = int(clamp(settings.difficulty + 1, 1, 100))
                 elif key == "fov":
                     settings.fov = clamp(settings.fov + math.radians(2.0), math.radians(40), math.radians(120))
             elif kind == "choice":
+                cur = str(getattr(settings, key))
                 if key == "render_mode":
-                    settings.render_mode = cycle_value(render_choices, settings.render_mode, 1)  # type: ignore
-                elif key == "colors":
-                    settings.colors = cycle_value(onoffauto, settings.colors, 1)  # type: ignore
-                elif key == "unicode":
-                    settings.unicode = cycle_value(onoffauto, settings.unicode, 1)  # type: ignore
-                elif key == "mouse_look":
-                    settings.mouse_look = cycle_value(onoffauto, settings.mouse_look, 1)  # type: ignore
+                    settings.render_mode = cycle_value(render_choices, cur, 1)  # type: ignore
+                elif key in ("colors", "unicode", "mouse_look"):
+                    setattr(settings, key, cycle_value(onoffauto, cur, 1))
                 elif key == "hud":
-                    settings.hud = cycle_value(hud_choices, settings.hud, 1)  # type: ignore
+                    settings.hud = cycle_value(hud_choices, cur, 1)  # type: ignore
+                elif key == "game_mode":
+                    settings.game_mode = cycle_value(mode_choices, cur, 1)  # type: ignore
+                elif key == "language":
+                    settings.language = cycle_value(lang_choices, cur, 1)
             continue
 
         if ch in (10, 13, curses.KEY_ENTER, ord(" "), ord("\n")):
-            label, kind, key = items[sel]
+            label_key, kind, key = items[sel]
             if kind == "action":
                 if key == "quit":
-                    if confirm_yes_no(stdscr, "Выйти из игры?"):
+                    if confirm_yes_no(stdscr, tr, "prompt_exit"):
                         stdscr.nodelay(True)
                         return "quit"
                     continue
                 stdscr.nodelay(True)
                 return key
+
             if kind == "choice":
+                cur = str(getattr(settings, key))
                 if key == "render_mode":
-                    settings.render_mode = cycle_value(render_choices, settings.render_mode, 1)  # type: ignore
-                elif key == "colors":
-                    settings.colors = cycle_value(onoffauto, settings.colors, 1)  # type: ignore
-                elif key == "unicode":
-                    settings.unicode = cycle_value(onoffauto, settings.unicode, 1)  # type: ignore
-                elif key == "mouse_look":
-                    settings.mouse_look = cycle_value(onoffauto, settings.mouse_look, 1)  # type: ignore
+                    settings.render_mode = cycle_value(render_choices, cur, 1)  # type: ignore
+                elif key in ("colors", "unicode", "mouse_look"):
+                    setattr(settings, key, cycle_value(onoffauto, cur, 1))
                 elif key == "hud":
-                    settings.hud = cycle_value(hud_choices, settings.hud, 1)  # type: ignore
+                    settings.hud = cycle_value(hud_choices, cur, 1)  # type: ignore
+                elif key == "game_mode":
+                    settings.game_mode = cycle_value(mode_choices, cur, 1)  # type: ignore
+                elif key == "language":
+                    settings.language = cycle_value(lang_choices, cur, 1)
                 continue
 
         if ch in (ord("q"), ord("Q")):
-            if confirm_yes_no(stdscr, "Выйти из игры?"):
+            if confirm_yes_no(stdscr, tr, "prompt_exit"):
                 stdscr.nodelay(True)
                 return "quit"
 
 
-# -------------------- Game --------------------
+# -------------------- Win screen --------------------
 
-def win_screen(stdscr, seconds: float, style: Style) -> None:
+def win_screen(stdscr, tr: Callable[[str], str], seconds: float, style: Style, wait: bool) -> None:
     stdscr.erase()
     h, w = stdscr.getmaxyx()
-    msg1 = "Вы нашли выход!" if style.unicode_ok else "YOU WIN!"
-    msg2 = f"Время: {seconds:.1f} c" if style.unicode_ok else f"Time: {seconds:.1f}s"
-    msg3 = "Нажмите любую клавишу…" if style.unicode_ok else "Press any key..."
+
+    msg1 = tr("win_title")
+    msg2 = tr("win_time", sec=seconds)
+    msg3 = tr("win_press_key") if wait else tr("win_demo_next")
 
     y = h // 2 - 1
     for i, msg in enumerate((msg1, msg2, msg3)):
         x = max(0, (w - len(msg)) // 2)
         safe_addstr(stdscr, y + i, x, msg[: max(0, w - x - 1)], curses.A_BOLD)
-    stdscr.refresh()
-    stdscr.nodelay(False)
-    stdscr.getch()
-    stdscr.nodelay(True)
 
+    stdscr.refresh()
+
+    if wait:
+        stdscr.nodelay(False)
+        stdscr.getch()
+        stdscr.nodelay(True)
+    else:
+        time.sleep(0.9)
+
+
+# -------------------- Game loop --------------------
 
 def main(stdscr) -> None:
     curses.curs_set(0)
@@ -1199,11 +1608,10 @@ def main(stdscr) -> None:
 
     base_style = init_style(stdscr)
 
-    # probe mouse support, then disable (we'll enable if user wants)
     mouse_possible = set_mouse_tracking(True)
     set_mouse_tracking(False)
 
-    settings = Settings()
+    settings = Settings()  # default language is English
     caps = detect_caps(base_style, mouse_possible)
 
     action = run_menu(stdscr, base_style, caps, settings, mode="start")
@@ -1213,6 +1621,8 @@ def main(stdscr) -> None:
     rng = random.Random()
 
     while True:
+        tr = make_tr(settings.language)
+
         cw, ch = difficulty_to_size(settings.difficulty)
         grid = generate_maze(cw, ch, rng)
         goal_xy = (2 * (cw - 1) + 1, 2 * (ch - 1) + 1)
@@ -1229,6 +1639,12 @@ def main(stdscr) -> None:
 
         player = Player(x=1.5, y=1.5, ang=0.0)
         show_map = False
+
+        demo_path: Optional[List[Tuple[int, int]]] = None
+        demo_idx = 0
+        if settings.game_mode == "demo":
+            demo_path = find_path_cells(grid, (int(player.x), int(player.y)), goal_xy)
+            demo_idx = 0
 
         start_time = time.monotonic()
         hud_until = start_time + 5.0
@@ -1250,6 +1666,8 @@ def main(stdscr) -> None:
             dt = now - last
             last = now
 
+            tr = make_tr(settings.language)
+
             if settings.hud == "always":
                 hud_visible = True
             elif settings.hud == "off":
@@ -1262,7 +1680,7 @@ def main(stdscr) -> None:
                 if chkey == -1:
                     break
 
-                if chkey == 27:  # ESC -> menu
+                if chkey == 27:
                     menu_action = run_menu(stdscr, base_style, caps, settings, mode="pause")
                     if menu_action == "quit":
                         return
@@ -1279,6 +1697,12 @@ def main(stdscr) -> None:
                     else:
                         mouse_active = mouse_possible and set_mouse_tracking(True)
 
+                    if settings.game_mode == "demo" and demo_path is None:
+                        demo_path = find_path_cells(grid, (int(player.x), int(player.y)), goal_xy)
+                        demo_idx = 0
+                    if settings.game_mode == "play":
+                        demo_path = None
+
                     last = time.monotonic()
                     continue
 
@@ -1287,32 +1711,34 @@ def main(stdscr) -> None:
                     continue
 
                 if chkey in (ord("q"), ord("Q")):
-                    if confirm_yes_no(stdscr, "Выйти из игры?"):
+                    if confirm_yes_no(stdscr, tr, "prompt_exit"):
                         return
                     continue
 
-                if chkey in (ord("w"), ord("W")):
-                    move_dir = 1
-                    move_until = now + HOLD_TIMEOUT
-                elif chkey in (ord("s"), ord("S")):
-                    move_dir = -1
-                    move_until = now + HOLD_TIMEOUT
-                elif chkey in (ord("a"), ord("A")):
-                    rot_dir = -1
-                    rot_until = now + HOLD_TIMEOUT
-                elif chkey in (ord("d"), ord("D")):
-                    rot_dir = 1
-                    rot_until = now + HOLD_TIMEOUT
-                elif chkey == curses.KEY_MOUSE and mouse_active:
+                if settings.game_mode == "play":
+                    if chkey in (ord("w"), ord("W")):
+                        move_dir = 1
+                        move_until = now + HOLD_TIMEOUT
+                    elif chkey in (ord("s"), ord("S")):
+                        move_dir = -1
+                        move_until = now + HOLD_TIMEOUT
+                    elif chkey in (ord("a"), ord("A")):
+                        rot_dir = -1
+                        rot_until = now + HOLD_TIMEOUT
+                    elif chkey in (ord("d"), ord("D")):
+                        rot_dir = 1
+                        rot_until = now + HOLD_TIMEOUT
+
+                if chkey == curses.KEY_MOUSE and mouse_active:
                     try:
                         _id, mx, _my, _mz, bstate = curses.getmouse()
                     except Exception:
                         continue
                     if hasattr(curses, "REPORT_MOUSE_POSITION") and (bstate & curses.REPORT_MOUSE_POSITION):
                         if last_mouse_x is not None:
-                            dx = mx - last_mouse_x
-                            if dx:
-                                player.ang = normalize_angle(player.ang + dx * settings.mouse_sens)
+                            dxm = mx - last_mouse_x
+                            if dxm:
+                                player.ang = normalize_angle(player.ang + dxm * settings.mouse_sens)
                         last_mouse_x = mx
                     else:
                         last_mouse_x = mx
@@ -1320,41 +1746,49 @@ def main(stdscr) -> None:
             if restart_level:
                 break
 
-            if now > move_until:
-                move_dir = 0
-            if now > rot_until:
-                rot_dir = 0
+            if settings.game_mode == "demo":
+                if demo_path is None:
+                    demo_path = find_path_cells(grid, (int(player.x), int(player.y)), goal_xy)
+                    demo_idx = 0
+                else:
+                    demo_idx = demo_step(grid, player, demo_path, demo_idx, dt)
+            else:
+                if now > move_until:
+                    move_dir = 0
+                if now > rot_until:
+                    rot_dir = 0
 
-            if rot_dir:
-                player.ang = normalize_angle(player.ang + rot_dir * ROT_SPEED * dt)
+                if rot_dir:
+                    player.ang = normalize_angle(player.ang + rot_dir * ROT_SPEED * dt)
 
-            if move_dir:
-                move = move_dir * MOVE_SPEED * dt
-                dx = math.cos(player.ang) * move
-                dy = math.sin(player.ang) * move
-                nx = player.x + dx
-                ny = player.y + dy
-                if not is_wall(grid, int(nx), int(player.y)):
-                    player.x = nx
-                if not is_wall(grid, int(player.x), int(ny)):
-                    player.y = ny
+                if move_dir:
+                    move = move_dir * MOVE_SPEED * dt
+                    dx = math.cos(player.ang) * move
+                    dy = math.sin(player.ang) * move
+                    nx = player.x + dx
+                    ny = player.y + dy
+                    if not is_wall(grid, int(nx), int(player.y)):
+                        player.x = nx
+                    if not is_wall(grid, int(player.x), int(ny)):
+                        player.y = ny
 
             gx, gy = goal_xy
             if int(player.x) == gx and int(player.y) == gy:
-                win_screen(stdscr, time.monotonic() - start_time, style)
+                seconds = time.monotonic() - start_time
+                wait = (settings.game_mode != "demo")
+                win_screen(stdscr, tr, seconds, style, wait=wait)
                 restart_level = True
                 break
 
             stdscr.erase()
             if show_map:
-                render_map(stdscr, grid, player, goal_xy, settings, style)
+                render_map(stdscr, tr, grid, player, goal_xy, settings, style)
             else:
                 renderer = choose_renderer(settings, style)
-                render_scene(stdscr, renderer, grid, player, goal_xy, settings, style, hud_visible, mouse_active)
+                render_scene(stdscr, tr, renderer, grid, player, goal_xy, settings, style, hud_visible, mouse_active)
             stdscr.refresh()
-            time.sleep(0.01)
 
-        continue
+            time.sleep(0.01)
 
 
 def run() -> None:
