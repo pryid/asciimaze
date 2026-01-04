@@ -73,7 +73,3 @@ The game will compute a solution path (BFS on the grid) and automatically walk t
 ## Project layout
 
 - `main.py` — the full game (single-file implementation)
-
-## License
-
-Choose a license that fits your needs (MIT/Apache-2.0/etc.) and add it as `LICENSE`.
