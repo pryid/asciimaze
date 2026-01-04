@@ -1,24 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-3D maze in terminal (raycasting) with settings menu, multiple renderers, demo/auto-solve mode,
-and localization (English default, Russian optional).
-
-Controls (in game):
-- W/S: move forward/back
-- A/D: turn left/right
-- M: map
-- ESC: menu
-- Q: quit (with Y/N confirmation)
-
-Render modes:
-- text: classic chars
-- half: half-block (2 vertical pixels per cell)
-- braille: braille dots (2x4 pixels per cell; UTF-8)
-- auto: best available
-
-Demo mode:
-- If enabled from the start menu, the game finds a path and walks it automatically.
+3D maze in terminal (raycasting) with:
+- Adaptive terminal rendering
+- Multiple renderers (text/half-block/braille/auto)
+- Pseudo-graphics menu (ESC)
+- Localization (English default + Russian)
+- Demo/autosolve modes
+- "Free" mode: vertical movement (fly) with basic collision vs floor/walls
+- On-the-fly FOV: 1 decrease, 2 increase, 3 reset to 60°
 """
 
 from __future__ import annotations
@@ -32,49 +22,63 @@ import sys
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Literal, Callable
+from typing import Callable, Dict, List, Optional, Tuple, Literal
 
+# ----- World constants -----
 WALL = "#"
 OPEN = " "
 
-FOV_DEFAULT = math.pi / 3.0
+WALL_HEIGHT = 1.0
+EYE_HEIGHT = 0.5  # camera above feet
+
 MAX_RAY_DIST = 40.0
 
 MOVE_SPEED = 3.2
 ROT_SPEED = 2.2
 HOLD_TIMEOUT = 0.14
 
+# Free-mode vertical movement (minecraft-ish creative flight feel)
+FREE_ACCEL = 18.0         # blocks/s^2
+FREE_MAX_V = 6.0          # blocks/s
+FREE_DAMP = 12.0          # 1/s velocity damping when no vertical input
+FREE_MAX_Z = 6.0          # clamp height (feet)
+
+# FOV control
+FOV_DEFAULT = math.pi / 3.0  # 60°
+FOV_MIN = math.radians(40.0)
+FOV_MAX = math.radians(120.0)
+FOV_STEP = math.radians(5.0)
+
+# Mouse look
 MOUSE_SENS_DEFAULT = 0.012
 
+# ASCII fallback shading
 ASCII_WALL_SHADES = "@%#*+=-:."
 ASCII_FLOOR_SHADES = ".,-~:;=!*#$@"
 UNICODE_FLOOR_CHARS = "·⋅∘°ˑ"
 
 RenderMode = Literal["auto", "text", "half", "braille"]
-GameMode = Literal["play", "demo"]
+Mode = Literal["default", "free", "demo_default", "demo_free"]
 
-
+# ----- Localization -----
 LOCALES: Dict[str, Dict[str, str]] = {
     "en": {
-        # Language names
         "lang_name": "English",
         "lang_label": "Language",
 
-        # Generic / prompts
         "msg_too_small": "Terminal too small. Enlarge it.",
+
         "prompt_yes_no": "{prompt} Y/N ",
         "prompt_exit": "Exit the game?",
         "prompt_quit_short": "Quit?",
         "prompt_restart_short": "Restart?",
 
-        # Menu chrome
         "menu_title": " SETTINGS / MENU ",
         "menu_terminal": "Terminal: {caps}",
         "menu_footer": "←/→: change   Enter: select   ESC: back",
         "menu_small": "Terminal too small for the menu. Enlarge it.",
         "menu_small_hint": "Enter: continue   Q: quit",
 
-        # Menu items (labels)
         "menu_action_start": "Start",
         "menu_action_resume": "Resume",
         "menu_action_restart": "Restart",
@@ -90,7 +94,6 @@ LOCALES: Dict[str, Dict[str, str]] = {
         "menu_item_fov": "FOV",
         "menu_item_language": "Language",
 
-        # Menu selection / help
         "help_selected": "Selected: {label}",
         "help_nav_title": "Navigation:",
         "help_nav_updown": "  ↑/↓ or W/S — select",
@@ -98,6 +101,7 @@ LOCALES: Dict[str, Dict[str, str]] = {
         "help_nav_enter": "  Enter/Space — apply",
         "help_nav_esc": "  ESC — close",
         "help_in_game": "In game: W/S move, A/D turn, M map, ESC menu, Q quit",
+        "help_fov_keys": "FOV in game: 1 decrease, 2 increase, 3 reset (60°).",
 
         "help_render_title": "Render modes:",
         "help_render_text": "  text    — fast/simple",
@@ -115,10 +119,11 @@ LOCALES: Dict[str, Dict[str, str]] = {
         "help_mouse_desc2": "  If it does not work — set to off.",
 
         "help_mode_title": "Mode:",
-        "help_mode_play": "  play — you control the player",
-        "help_mode_demo": "  demo — auto-solver walks the maze",
+        "help_mode_default": "  default      — normal walking",
+        "help_mode_free": "  free         — fly (Space up, X down) + collision",
+        "help_mode_demo_default": "  demo default — auto-solve (walk)",
+        "help_mode_demo_free": "  demo free    — auto-solve (fly)",
 
-        # Options (display)
         "opt_auto": "auto",
         "opt_on": "on",
         "opt_off": "off",
@@ -127,10 +132,12 @@ LOCALES: Dict[str, Dict[str, str]] = {
         "opt_braille": "braille",
         "opt_auto5": "auto5",
         "opt_always": "always",
-        "opt_play": "play",
-        "opt_demo": "demo",
 
-        # Capabilities tags
+        "opt_default": "default",
+        "opt_free": "free",
+        "opt_demo_default": "demo default",
+        "opt_demo_free": "demo free",
+
         "cap_utf8_ok": "UTF-8✓",
         "cap_utf8_no": "UTF-8×",
         "cap_color_256": "256c",
@@ -140,15 +147,17 @@ LOCALES: Dict[str, Dict[str, str]] = {
         "cap_mouse_no": "mouse×",
         "warn_mouse": "(!)",
 
-        # HUD / map / win
-        "hud_line1": "W/S move  A/D turn  M map  ESC menu  Q quit",
-        "hud_line2": "Diff:{diff:3d}  To exit:{dist:6.1f}  Render:{render}  {tags}",
+        "hud_line1_default": "W/S move  A/D turn  M map  1/2/3 FOV  ESC menu  Q quit",
+        "hud_line1_free": "W/S move  A/D turn  Space up  X down  1/2/3 FOV  ESC menu  Q quit",
+        "hud_line2": "Mode:{mode}  Diff:{diff:3d}  To exit:{dist:6.1f}  FOV:{fov:5.1f}°  Render:{render}  {tags}",
+
         "tag_ascii": "ASCII",
         "tag_utf8": "UTF-8",
         "tag_color": "color",
         "tag_mono": "mono",
         "tag_mouse": "mouse",
         "tag_demo": "DEMO",
+        "tag_free": "FREE",
 
         "map_title": "MAP — M back  ESC menu  Q quit",
 
@@ -162,6 +171,7 @@ LOCALES: Dict[str, Dict[str, str]] = {
         "lang_label": "Язык",
 
         "msg_too_small": "Окно слишком маленькое. Увеличьте терминал.",
+
         "prompt_yes_no": "{prompt} Y/N ",
         "prompt_exit": "Выйти из игры?",
         "prompt_quit_short": "Выйти?",
@@ -195,6 +205,7 @@ LOCALES: Dict[str, Dict[str, str]] = {
         "help_nav_enter": "  Enter/Space — применить",
         "help_nav_esc": "  ESC — закрыть",
         "help_in_game": "В игре: W/S ход, A/D поворот, M карта, ESC меню, Q выход",
+        "help_fov_keys": "FOV в игре: 1 меньше, 2 больше, 3 сброс (60°).",
 
         "help_render_title": "Рендеры:",
         "help_render_text": "  text    — быстро/просто",
@@ -212,8 +223,10 @@ LOCALES: Dict[str, Dict[str, str]] = {
         "help_mouse_desc2": "  Если не работает — выключи (off).",
 
         "help_mode_title": "Режим:",
-        "help_mode_play": "  play — управление вручную",
-        "help_mode_demo": "  demo — авто-прохождение лабиринта",
+        "help_mode_default": "  default      — обычная ходьба",
+        "help_mode_free": "  free         — полёт (Space вверх, X вниз) + коллизии",
+        "help_mode_demo_default": "  demo default — авто-прохождение (ходьба)",
+        "help_mode_demo_free": "  demo free    — авто-прохождение (полёт)",
 
         "opt_auto": "auto",
         "opt_on": "on",
@@ -223,26 +236,32 @@ LOCALES: Dict[str, Dict[str, str]] = {
         "opt_braille": "braille",
         "opt_auto5": "auto5",
         "opt_always": "always",
-        "opt_play": "play",
-        "opt_demo": "demo",
+
+        "opt_default": "default",
+        "opt_free": "free",
+        "opt_demo_default": "demo default",
+        "opt_demo_free": "demo free",
 
         "cap_utf8_ok": "UTF-8✓",
         "cap_utf8_no": "UTF-8×",
         "cap_color_256": "256c",
-        "cap_color": "color",
-        "cap_mono": "mono",
+        "cap_color": "цвет",
+        "cap_mono": "моно",
         "cap_mouse_ok": "мышь✓",
         "cap_mouse_no": "мышь×",
         "warn_mouse": "(!)",
 
-        "hud_line1": "W/S:движ  A/D:поворот  M:карта  ESC:меню  Q:выход",
-        "hud_line2": "Сложн:{diff:3d}  До выхода:{dist:6.1f}  Рендер:{render}  {tags}",
+        "hud_line1_default": "W/S:движ  A/D:поворот  M:карта  1/2/3:FOV  ESC:меню  Q:выход",
+        "hud_line1_free": "W/S:движ  A/D:поворот  Space:вверх  X:вниз  1/2/3:FOV  ESC:меню  Q:выход",
+        "hud_line2": "Режим:{mode}  Сложн:{diff:3d}  До выхода:{dist:6.1f}  FOV:{fov:5.1f}°  Рендер:{render}  {tags}",
+
         "tag_ascii": "ASCII",
         "tag_utf8": "UTF-8",
         "tag_color": "цвет",
         "tag_mono": "моно",
         "tag_mouse": "мышь",
         "tag_demo": "ДЕМО",
+        "tag_free": "FREE",
 
         "map_title": "КАРТА — M:назад  ESC:меню  Q:выход",
 
@@ -267,18 +286,30 @@ def make_tr(lang: str) -> Callable[[str], str]:
     return tr
 
 
+def prefer_utf8() -> bool:
+    enc = (
+        (sys.stdout.encoding or "") +
+        "|" + locale.getpreferredencoding(False) +
+        "|" + (os.environ.get("LC_ALL") or "") +
+        "|" + (os.environ.get("LANG") or "")
+    ).upper()
+    return ("UTF-8" in enc) or ("UTF8" in enc)
+
+
 @dataclass
 class Player:
     x: float
     y: float
+    z: float
     ang: float
+    vz: float = 0.0  # vertical velocity (free mode)
 
 
 @dataclass
 class Settings:
     difficulty: int = 30
-    game_mode: GameMode = "play"           # play/demo
-    language: str = "en"                   # default English
+    mode: Mode = "default"
+    language: str = "en"
 
     render_mode: RenderMode = "auto"
     colors: Literal["auto", "on", "off"] = "auto"
@@ -370,16 +401,6 @@ def normalize_angle(a: float) -> float:
     while a > math.pi:
         a -= 2 * math.pi
     return a
-
-
-def prefer_utf8() -> bool:
-    enc = (
-        (sys.stdout.encoding or "") +
-        "|" + locale.getpreferredencoding(False) +
-        "|" + (os.environ.get("LC_ALL") or "") +
-        "|" + (os.environ.get("LANG") or "")
-    ).upper()
-    return ("UTF-8" in enc) or ("UTF8" in enc)
 
 
 def init_style(stdscr) -> Style:
@@ -505,26 +526,17 @@ def effective_style(base: Style, settings: Settings) -> Style:
     elif settings.colors == "on":
         colors_ok = base.colors_ok
 
-    wall_pairs = base.wall_pairs if colors_ok else []
-    floor_pairs = base.floor_pairs if colors_ok else []
-    hud_pair = base.hud_pair if colors_ok else 0
-    map_wall_pair = base.map_wall_pair if colors_ok else 0
-    map_floor_pair = base.map_floor_pair if colors_ok else 0
-    map_player_pair = base.map_player_pair if colors_ok else 0
-    map_goal_pair = base.map_goal_pair if colors_ok else 0
-    color_mode = base.color_mode if colors_ok else "none"
-
     return Style(
         unicode_ok=unicode_ok,
         colors_ok=colors_ok,
-        color_mode=color_mode,
-        wall_pairs=wall_pairs,
-        floor_pairs=floor_pairs,
-        hud_pair=hud_pair,
-        map_wall_pair=map_wall_pair,
-        map_floor_pair=map_floor_pair,
-        map_player_pair=map_player_pair,
-        map_goal_pair=map_goal_pair,
+        color_mode=base.color_mode if colors_ok else "none",
+        wall_pairs=base.wall_pairs if colors_ok else [],
+        floor_pairs=base.floor_pairs if colors_ok else [],
+        hud_pair=base.hud_pair if colors_ok else 0,
+        map_wall_pair=base.map_wall_pair if colors_ok else 0,
+        map_floor_pair=base.map_floor_pair if colors_ok else 0,
+        map_player_pair=base.map_player_pair if colors_ok else 0,
+        map_goal_pair=base.map_goal_pair if colors_ok else 0,
     )
 
 
@@ -537,6 +549,7 @@ def detect_caps(base_style: Style, mouse_motion_ok: bool) -> Capabilities:
     )
 
 
+# ----- Maze generation -----
 def difficulty_to_size(d: int) -> Tuple[int, int]:
     d = int(clamp(d, 1, 100))
     cw = 8 + int(d * 0.50)
@@ -588,6 +601,35 @@ def is_wall(grid: List[str], x: int, y: int) -> bool:
     return grid[y][x] == WALL
 
 
+def cell_floor_height(grid: List[str], x: int, y: int) -> float:
+    # open floor at 0, wall top at 1
+    if y < 0 or y >= len(grid) or x < 0 or x >= len(grid[0]):
+        return WALL_HEIGHT
+    return WALL_HEIGHT if grid[y][x] == WALL else 0.0
+
+
+def can_enter_cell(grid: List[str], x: float, y: float, z_feet: float) -> bool:
+    # You can occupy a wall cell only if you're at/above its top.
+    fx = int(x)
+    fy = int(y)
+    floor = cell_floor_height(grid, fx, fy)
+    return z_feet >= floor - 0.01
+
+
+def resolve_floor_collision(grid: List[str], player: Player) -> None:
+    floor = cell_floor_height(grid, int(player.x), int(player.y))
+    if player.z < floor:
+        player.z = floor
+        if player.vz < 0:
+            player.vz = 0.0
+    # clamp max height
+    if player.z > FREE_MAX_Z:
+        player.z = FREE_MAX_Z
+        if player.vz > 0:
+            player.vz = 0.0
+
+
+# ----- Raycasting -----
 def cast_ray(grid: List[str], px: float, py: float, ang: float) -> Tuple[float, int]:
     ray_dir_x = math.cos(ang)
     ray_dir_y = math.sin(ang)
@@ -652,6 +694,7 @@ def player_dir_glyph(style: Style, ang: float) -> str:
     return "◄"
 
 
+# ----- Confirmation prompt -----
 def confirm_yes_no(stdscr, tr: Callable[[str], str], prompt_key: str) -> bool:
     prompt = tr(prompt_key)
     h, w = stdscr.getmaxyx()
@@ -671,6 +714,7 @@ def confirm_yes_no(stdscr, tr: Callable[[str], str], prompt_key: str) -> bool:
         stdscr.nodelay(True)
 
 
+# ----- Mouse tracking -----
 def set_mouse_tracking(enable: bool) -> bool:
     try:
         if not enable:
@@ -689,10 +733,8 @@ def set_mouse_tracking(enable: bool) -> bool:
         return False
 
 
-# -------------------- Pathfinding (demo mode) --------------------
-
+# ----- Pathfinding for demo_default -----
 def find_path_cells(grid: List[str], start: Tuple[int, int], goal: Tuple[int, int]) -> List[Tuple[int, int]]:
-    """BFS shortest path on open tiles; returns list of (x,y) including start and goal."""
     H = len(grid)
     W = len(grid[0]) if H else 0
     sx, sy = start
@@ -725,11 +767,8 @@ def find_path_cells(grid: List[str], start: Tuple[int, int], goal: Tuple[int, in
     return path
 
 
-def demo_step(grid: List[str], player: Player, path: List[Tuple[int, int]], idx: int, dt: float) -> int:
-    """
-    Advance the player along the path (grid cells).
-    Returns updated index (the last reached path cell).
-    """
+def demo_walk_step(grid: List[str], player: Player, path: List[Tuple[int, int]], idx: int, dt: float) -> int:
+    """Auto-walk along BFS path (default demo)."""
     if not path or idx >= len(path) - 1:
         return idx
 
@@ -760,14 +799,6 @@ def demo_step(grid: List[str], player: Player, path: List[Tuple[int, int]], idx:
         player.ang = normalize_angle(player.ang + clamp(diff, -max_rot, max_rot))
         return idx
 
-    # Keep centered in corridors
-    if dx != 0:
-        target_y = cur_cell[1] + 0.5
-        player.y += (target_y - player.y) * min(1.0, dt * 8.0)
-    if dy != 0:
-        target_x = cur_cell[0] + 0.5
-        player.x += (target_x - player.x) * min(1.0, dt * 8.0)
-
     move = MOVE_SPEED * dt
     dxm = math.cos(player.ang) * move
     dym = math.sin(player.ang) * move
@@ -783,40 +814,127 @@ def demo_step(grid: List[str], player: Player, path: List[Tuple[int, int]], idx:
     return idx
 
 
-# -------------------- Renderer helpers --------------------
+# ----- Free-mode physics and demo_free autopilot -----
+def update_free_vertical(grid: List[str], player: Player, vert_dir: int, dt: float) -> None:
+    # vert_dir: +1 up, -1 down, 0 none
+    if vert_dir > 0:
+        player.vz += FREE_ACCEL * dt
+    elif vert_dir < 0:
+        player.vz -= FREE_ACCEL * dt
+    else:
+        # damp toward 0
+        k = min(1.0, FREE_DAMP * dt)
+        player.vz *= (1.0 - k)
+
+    player.vz = clamp(player.vz, -FREE_MAX_V, FREE_MAX_V)
+    player.z += player.vz * dt
+
+    resolve_floor_collision(grid, player)
+
+
+def move_horizontal_default(grid: List[str], player: Player, forward: float, dt: float) -> None:
+    move = forward * MOVE_SPEED * dt
+    dx = math.cos(player.ang) * move
+    dy = math.sin(player.ang) * move
+    nx = player.x + dx
+    ny = player.y + dy
+    if not is_wall(grid, int(nx), int(player.y)):
+        player.x = nx
+    if not is_wall(grid, int(player.x), int(ny)):
+        player.y = ny
+
+
+def move_horizontal_free(grid: List[str], player: Player, forward: float, dt: float) -> None:
+    move = forward * MOVE_SPEED * dt
+    dx = math.cos(player.ang) * move
+    dy = math.sin(player.ang) * move
+    nx = player.x + dx
+    ny = player.y + dy
+    if can_enter_cell(grid, nx, player.y, player.z):
+        player.x = nx
+    if can_enter_cell(grid, player.x, ny, player.z):
+        player.y = ny
+    resolve_floor_collision(grid, player)
+
+
+def demo_free_step(grid: List[str], player: Player, goal_xy: Tuple[int, int], dt: float) -> None:
+    """Auto-solve in free mode: climb, fly straight to exit, descend near the end."""
+    tx = goal_xy[0] + 0.5
+    ty = goal_xy[1] + 0.5
+
+    dx = tx - player.x
+    dy = ty - player.y
+    dist = math.hypot(dx, dy)
+
+    # Choose target altitude
+    cruise = 1.2
+    if dist > 2.0:
+        target_z = cruise
+    else:
+        # descend to floor at goal cell (typically 0)
+        target_z = cell_floor_height(grid, goal_xy[0], goal_xy[1])
+
+    if player.z < target_z - 0.05:
+        vdir = 1
+    elif player.z > target_z + 0.05:
+        vdir = -1
+    else:
+        vdir = 0
+    update_free_vertical(grid, player, vdir, dt)
+
+    desired = math.atan2(ty - player.y, tx - player.x)
+    diff = normalize_angle(desired - player.ang)
+    max_rot = ROT_SPEED * dt
+    if abs(diff) > 0.01:
+        player.ang = normalize_angle(player.ang + clamp(diff, -max_rot, max_rot))
+
+    # Move when mostly facing the target
+    if abs(diff) < 0.45:
+        move_horizontal_free(grid, player, forward=1.0, dt=dt)
+
+
+# ----- Renderer selection -----
+def choose_renderer(settings: Settings, style: Style) -> RenderMode:
+    if settings.render_mode != "auto":
+        if settings.render_mode in ("half", "braille") and not style.unicode_ok:
+            return "text"
+        return settings.render_mode
+    return "braille" if style.unicode_ok else "text"
+
 
 def option_display(tr: Callable[[str], str], key: str, value: str) -> str:
     mapping = {
+        # toggles
         "auto": "opt_auto",
         "on": "opt_on",
         "off": "opt_off",
+        # renderer
         "text": "opt_text",
         "half": "opt_half",
         "braille": "opt_braille",
+        # hud
         "auto5": "opt_auto5",
         "always": "opt_always",
-        "play": "opt_play",
-        "demo": "opt_demo",
+        # modes
+        "default": "opt_default",
+        "free": "opt_free",
+        "demo_default": "opt_demo_default",
+        "demo_free": "opt_demo_free",
     }
     if key == "language":
         return (LOCALES.get(value) or LOCALES["en"]).get("lang_name", value)
     return tr(mapping.get(value, value))
 
 
-def draw_hud(
-    stdscr,
-    tr: Callable[[str], str],
-    player: Player,
-    goal_xy: Tuple[int, int],
-    settings: Settings,
-    style: Style,
-    mouse_active: bool,
-) -> None:
+# ----- HUD -----
+def draw_hud(stdscr, tr: Callable[[str], str], player: Player, goal_xy: Tuple[int, int], settings: Settings, style: Style, mouse_active: bool) -> None:
     h, w = stdscr.getmaxyx()
+
     gx, gy = goal_xy
     dist_goal = math.hypot((gx + 0.5) - player.x, (gy + 0.5) - player.y)
 
-    line1 = tr("hud_line1")
+    is_free = settings.mode in ("free", "demo_free")
+    line1 = tr("hud_line1_free") if is_free else tr("hud_line1_default")
 
     tags = []
     tags.append(tr("tag_utf8") if style.unicode_ok else tr("tag_ascii"))
@@ -828,16 +946,21 @@ def draw_hud(
         tags.append(tr("tag_mono"))
     if mouse_active:
         tags.append(tr("tag_mouse"))
-    if settings.game_mode == "demo":
+    if settings.mode in ("demo_default", "demo_free"):
         tags.append(tr("tag_demo"))
+    if settings.mode in ("free", "demo_free"):
+        tags.append(tr("tag_free"))
 
     tag_str = "+".join(tags)
     render_disp = option_display(tr, "render_mode", settings.render_mode)
+    mode_disp = option_display(tr, "mode", settings.mode)
 
     line2 = tr(
         "hud_line2",
+        mode=mode_disp,
         diff=settings.difficulty,
         dist=dist_goal,
+        fov=settings.fov * 180.0 / math.pi,
         render=render_disp,
         tags=tag_str,
     )
@@ -849,17 +972,24 @@ def draw_hud(
     safe_addstr(stdscr, h - 1, 0, line2[: max(0, w - 1)], attr)
 
 
-def render_text(
-    stdscr,
-    tr: Callable[[str], str],
-    grid: List[str],
-    player: Player,
-    goal_xy: Tuple[int, int],
-    settings: Settings,
-    style: Style,
-    hud_visible: bool,
-    mouse_active: bool,
-) -> None:
+# ----- 3D renderers with camera height -----
+def compute_wall_span(view_h: int, dist: float, cam_z: float) -> Tuple[int, int]:
+    # projection factor for 1-unit wall height
+    proj = (view_h * 1.25) / max(0.0001, dist)
+    top = int(view_h * 0.5 - (WALL_HEIGHT - cam_z) * proj)
+    bot = int(view_h * 0.5 - (0.0 - cam_z) * proj)
+    return top, bot
+
+
+def compute_wall_span_pix(pix_h: int, dist: float, cam_z: float) -> Tuple[int, int]:
+    proj = (pix_h * 1.25) / max(0.0001, dist)
+    top = int(pix_h * 0.5 - (WALL_HEIGHT - cam_z) * proj)
+    bot = int(pix_h * 0.5 - (0.0 - cam_z) * proj)
+    return top, bot
+
+
+def render_text(stdscr, tr: Callable[[str], str], grid: List[str], player: Player, goal_xy: Tuple[int, int],
+                settings: Settings, style: Style, hud_visible: bool, mouse_active: bool) -> None:
     h, w = stdscr.getmaxyx()
     if h < 8 or w < 24:
         stdscr.erase()
@@ -870,6 +1000,7 @@ def render_text(
     view_h = max(1, h - hud_lines)
     view_w = max(1, w - 1)
     fov = settings.fov
+    cam_z = player.z + EYE_HEIGHT
 
     tops = [0] * view_w
     bots = [0] * view_w
@@ -882,12 +1013,9 @@ def render_text(
         dist *= max(0.0001, math.cos(ray_ang - player.ang))
         dist = max(0.0001, dist)
 
-        wall_h = int(view_h * 1.25 / dist)
-        top = (view_h - wall_h) // 2
-        bot = top + wall_h
+        top, bot = compute_wall_span(view_h, dist, cam_z)
         tops[x] = top
         bots[x] = bot
-
         wall_chars[x] = style.wall_char_text(dist)
         wall_attrs[x] = style.wall_attr(dist, side)
 
@@ -920,17 +1048,8 @@ def render_text(
         draw_hud(stdscr, tr, player, goal_xy, settings, style, mouse_active)
 
 
-def render_halfblock(
-    stdscr,
-    tr: Callable[[str], str],
-    grid: List[str],
-    player: Player,
-    goal_xy: Tuple[int, int],
-    settings: Settings,
-    style: Style,
-    hud_visible: bool,
-    mouse_active: bool,
-) -> None:
+def render_halfblock(stdscr, tr: Callable[[str], str], grid: List[str], player: Player, goal_xy: Tuple[int, int],
+                     settings: Settings, style: Style, hud_visible: bool, mouse_active: bool) -> None:
     h, w = stdscr.getmaxyx()
     if h < 8 or w < 24:
         stdscr.erase()
@@ -941,10 +1060,11 @@ def render_halfblock(
     view_h = max(1, h - hud_lines)
     view_w = max(1, w - 1)
     fov = settings.fov
+    cam_z = player.z + EYE_HEIGHT
 
     pix_h = view_h * 2
-    top_half = [0] * view_w
-    bot_half = [0] * view_w
+    top_pix = [0] * view_w
+    bot_pix = [0] * view_w
     attr_col = [0] * view_w
     full_char_col = ["█"] * view_w
 
@@ -954,25 +1074,21 @@ def render_halfblock(
         dist *= max(0.0001, math.cos(ray_ang - player.ang))
         dist = max(0.0001, dist)
 
-        wall_h = int(pix_h * 1.25 / dist)
-        th = (pix_h - wall_h) // 2
-        bh = th + wall_h
-        top_half[x] = th
-        bot_half[x] = bh
-
+        tp, bp = compute_wall_span_pix(pix_h, dist, cam_z)
+        top_pix[x] = tp
+        bot_pix[x] = bp
         attr_col[x] = style.wall_attr(dist, side)
         full_char_col[x] = style.wall_char_text(dist) if not style.colors_ok else "█"
 
     for y in range(view_h):
         y_top = 2 * y
         y_bot = y_top + 1
-
         x = 0
         while x < view_w:
             def cell(xi: int) -> Tuple[str, int]:
-                th = top_half[xi]; bh = bot_half[xi]
-                top_on = th <= y_top < bh
-                bot_on = th <= y_bot < bh
+                tp = top_pix[xi]; bp = bot_pix[xi]
+                top_on = tp <= y_top < bp
+                bot_on = tp <= y_bot < bp
                 if top_on and bot_on:
                     return full_char_col[xi], attr_col[xi]
                 if top_on and not bot_on:
@@ -1004,17 +1120,8 @@ _BRAILLE_BITS = {
 }
 
 
-def render_braille(
-    stdscr,
-    tr: Callable[[str], str],
-    grid: List[str],
-    player: Player,
-    goal_xy: Tuple[int, int],
-    settings: Settings,
-    style: Style,
-    hud_visible: bool,
-    mouse_active: bool,
-) -> None:
+def render_braille(stdscr, tr: Callable[[str], str], grid: List[str], player: Player, goal_xy: Tuple[int, int],
+                   settings: Settings, style: Style, hud_visible: bool, mouse_active: bool) -> None:
     if not style.unicode_ok:
         render_text(stdscr, tr, grid, player, goal_xy, settings, style, hud_visible, mouse_active)
         return
@@ -1029,14 +1136,15 @@ def render_braille(
     view_h = max(1, h - hud_lines)
     view_w = max(1, w - 1)
     fov = settings.fov
+    cam_z = player.z + EYE_HEIGHT
 
     sub_w = view_w * 2
     pix_h = view_h * 4
 
     dist_sub = [0.0] * sub_w
     side_sub = [0] * sub_w
-    top_pix = [0] * sub_w
-    bot_pix = [0] * sub_w
+    top_p = [0] * sub_w
+    bot_p = [0] * sub_w
 
     for sx in range(sub_w):
         ray_ang = player.ang - fov / 2.0 + (sx / max(1, sub_w - 1)) * fov
@@ -1047,25 +1155,24 @@ def render_braille(
         dist_sub[sx] = dist
         side_sub[sx] = side
 
-        wall_h = int(pix_h * 1.25 / dist)
-        tp = (pix_h - wall_h) // 2
-        bp = tp + wall_h
-        top_pix[sx] = tp
-        bot_pix[sx] = bp
+        tp, bp = compute_wall_span_pix(pix_h, dist, cam_z)
+        top_p[sx] = tp
+        bot_p[sx] = bp
 
     for y in range(view_h):
         x = 0
         while x < view_w:
             def cell(xi: int) -> Tuple[str, int]:
                 bits = 0
+                base_y = 4 * y
                 for sub_col in (0, 1):
                     sx = 2 * xi + sub_col
-                    tp = top_pix[sx]; bp = bot_pix[sx]
-                    base_y = 4 * y
+                    tp = top_p[sx]; bp = bot_p[sx]
                     for sub_row in range(4):
                         py = base_y + sub_row
                         if tp <= py < bp:
                             bits |= _BRAILLE_BITS[(sub_col, sub_row)]
+
                 if bits:
                     sx0 = 2 * xi
                     sx1 = sx0 + 1
@@ -1074,6 +1181,7 @@ def render_braille(
                     else:
                         d = dist_sub[sx1]; side = side_sub[sx1]
                     return chr(0x2800 + bits), style.wall_attr(d, side)
+
                 if y < view_h // 2:
                     return " ", curses.A_NORMAL
                 return style.floor_char(y, view_h), style.floor_attr(y, view_h)
@@ -1093,26 +1201,8 @@ def render_braille(
         draw_hud(stdscr, tr, player, goal_xy, settings, style, mouse_active)
 
 
-def choose_renderer(settings: Settings, style: Style) -> RenderMode:
-    if settings.render_mode != "auto":
-        if settings.render_mode in ("half", "braille") and not style.unicode_ok:
-            return "text"
-        return settings.render_mode
-    return "braille" if style.unicode_ok else "text"
-
-
-def render_scene(
-    stdscr,
-    tr: Callable[[str], str],
-    renderer: RenderMode,
-    grid: List[str],
-    player: Player,
-    goal_xy: Tuple[int, int],
-    settings: Settings,
-    style: Style,
-    hud_visible: bool,
-    mouse_active: bool,
-) -> None:
+def render_scene(stdscr, tr: Callable[[str], str], renderer: RenderMode, grid: List[str], player: Player, goal_xy: Tuple[int, int],
+                 settings: Settings, style: Style, hud_visible: bool, mouse_active: bool) -> None:
     if renderer == "text":
         render_text(stdscr, tr, grid, player, goal_xy, settings, style, hud_visible, mouse_active)
     elif renderer == "half":
@@ -1123,17 +1213,8 @@ def render_scene(
         render_text(stdscr, tr, grid, player, goal_xy, settings, style, hud_visible, mouse_active)
 
 
-# -------------------- Map view --------------------
-
-def render_map(
-    stdscr,
-    tr: Callable[[str], str],
-    grid: List[str],
-    player: Player,
-    goal_xy: Tuple[int, int],
-    settings: Settings,
-    style: Style,
-) -> None:
+# ----- Map rendering -----
+def render_map(stdscr, tr: Callable[[str], str], grid: List[str], player: Player, goal_xy: Tuple[int, int], settings: Settings, style: Style) -> None:
     h, w = stdscr.getmaxyx()
     if h < 8 or w < 24:
         stdscr.erase()
@@ -1272,8 +1353,7 @@ def render_map(
             safe_addstr(stdscr, oy + header_lines, 0, "".join(row))
 
 
-# -------------------- Menu UI --------------------
-
+# ----- Menu UI -----
 def box_chars(unicode_ok: bool):
     if unicode_ok:
         return {"tl": "┌", "tr": "┐", "bl": "└", "br": "┘", "h": "─", "v": "│"}
@@ -1297,20 +1377,14 @@ def cycle_value(values: List[str], cur: str, delta: int) -> str:
     return values[(i + delta) % len(values)]
 
 
-def run_menu(
-    stdscr,
-    base_style: Style,
-    caps: Capabilities,
-    settings: Settings,
-    mode: Literal["start", "pause"],
-) -> str:
+def run_menu(stdscr, base_style: Style, caps: Capabilities, settings: Settings, mode: Literal["start", "pause"]) -> str:
     stdscr.nodelay(False)
     sel = 0
 
     render_choices = ["auto", "text", "half", "braille"]
     onoffauto = ["auto", "on", "off"]
     hud_choices = ["auto5", "always", "off"]
-    mode_choices = ["play", "demo"]
+    mode_choices = ["default", "free", "demo_default", "demo_free"]
 
     lang_choices = list(LOCALES.keys())
     if "en" in lang_choices:
@@ -1323,7 +1397,7 @@ def run_menu(
         items.append(("menu_action_start", "action", "start"))
 
     items += [
-        ("menu_item_mode", "choice", "game_mode"),
+        ("menu_item_mode", "choice", "mode"),
         ("menu_item_difficulty", "range", "difficulty"),
         ("menu_item_render", "choice", "render_mode"),
         ("menu_item_colors", "choice", "colors"),
@@ -1358,8 +1432,8 @@ def run_menu(
                 return "resume" if mode == "pause" else "start"
             continue
 
-        box_w = min(88, W - 4)
-        box_h = min(28, H - 4)
+        box_w = min(92, W - 4)
+        box_h = min(30, H - 4)
         box_x = (W - box_w) // 2
         box_y = (H - box_h) // 2
 
@@ -1419,18 +1493,18 @@ def run_menu(
                 elif key == "fov":
                     value = f"[ {settings.fov * 180.0 / math.pi:5.1f}° ]"
             elif kind == "choice":
-                cur = getattr(settings, key)
-                disp = option_display(tr, key, str(cur))
+                cur = str(getattr(settings, key))
+                disp = option_display(tr, key, cur)
                 value = f"[ {disp} ]"
-                if key == "mouse_look" and not caps.mouse_motion_ok and str(cur) != "off":
+                if key == "mouse_look" and not caps.mouse_motion_ok and cur != "off":
                     warn = " " + tr("warn_mouse")
 
             line = (prefix if is_sel else pad) + f"{label:<{label_width}} {value}{warn}"
             safe_addstr(stdscr, y, left_x, line[: left_w], attr)
 
+        # help panel
         label_key, kind, key = items[sel]
         label = tr(label_key)
-
         help_lines = [
             tr("help_selected", label=label),
             "",
@@ -1441,6 +1515,7 @@ def run_menu(
             tr("help_nav_esc"),
             "",
             tr("help_in_game"),
+            tr("help_fov_keys"),
             "",
         ]
 
@@ -1465,11 +1540,13 @@ def run_menu(
                 tr("help_mouse_desc1"),
                 tr("help_mouse_desc2"),
             ]
-        elif key == "game_mode":
+        elif key == "mode":
             help_lines += [
                 tr("help_mode_title"),
-                tr("help_mode_play"),
-                tr("help_mode_demo"),
+                tr("help_mode_default"),
+                tr("help_mode_free"),
+                tr("help_mode_demo_default"),
+                tr("help_mode_demo_free"),
             ]
 
         for i, line in enumerate(help_lines):
@@ -1500,46 +1577,32 @@ def run_menu(
             sel = (sel + 1) % len(items)
             continue
 
-        if ch in (curses.KEY_LEFT, ord("a"), ord("A")):
+        def adjust(delta: int) -> None:
+            nonlocal sel
             label_key, kind, key = items[sel]
             if kind == "range":
                 if key == "difficulty":
-                    settings.difficulty = int(clamp(settings.difficulty - 1, 1, 100))
+                    settings.difficulty = int(clamp(settings.difficulty + delta, 1, 100))
                 elif key == "fov":
-                    settings.fov = clamp(settings.fov - math.radians(2.0), math.radians(40), math.radians(120))
+                    settings.fov = clamp(settings.fov + math.radians(2.0) * delta, FOV_MIN, FOV_MAX)
             elif kind == "choice":
                 cur = str(getattr(settings, key))
                 if key == "render_mode":
-                    settings.render_mode = cycle_value(render_choices, cur, -1)  # type: ignore
+                    settings.render_mode = cycle_value(render_choices, cur, delta)  # type: ignore
                 elif key in ("colors", "unicode", "mouse_look"):
-                    setattr(settings, key, cycle_value(onoffauto, cur, -1))
+                    setattr(settings, key, cycle_value(onoffauto, cur, delta))
                 elif key == "hud":
-                    settings.hud = cycle_value(hud_choices, cur, -1)  # type: ignore
-                elif key == "game_mode":
-                    settings.game_mode = cycle_value(mode_choices, cur, -1)  # type: ignore
+                    settings.hud = cycle_value(hud_choices, cur, delta)  # type: ignore
+                elif key == "mode":
+                    settings.mode = cycle_value(mode_choices, cur, delta)  # type: ignore
                 elif key == "language":
-                    settings.language = cycle_value(lang_choices, cur, -1)
-            continue
+                    settings.language = cycle_value(lang_choices, cur, delta)
 
+        if ch in (curses.KEY_LEFT, ord("a"), ord("A")):
+            adjust(-1)
+            continue
         if ch in (curses.KEY_RIGHT, ord("d"), ord("D")):
-            label_key, kind, key = items[sel]
-            if kind == "range":
-                if key == "difficulty":
-                    settings.difficulty = int(clamp(settings.difficulty + 1, 1, 100))
-                elif key == "fov":
-                    settings.fov = clamp(settings.fov + math.radians(2.0), math.radians(40), math.radians(120))
-            elif kind == "choice":
-                cur = str(getattr(settings, key))
-                if key == "render_mode":
-                    settings.render_mode = cycle_value(render_choices, cur, 1)  # type: ignore
-                elif key in ("colors", "unicode", "mouse_look"):
-                    setattr(settings, key, cycle_value(onoffauto, cur, 1))
-                elif key == "hud":
-                    settings.hud = cycle_value(hud_choices, cur, 1)  # type: ignore
-                elif key == "game_mode":
-                    settings.game_mode = cycle_value(mode_choices, cur, 1)  # type: ignore
-                elif key == "language":
-                    settings.language = cycle_value(lang_choices, cur, 1)
+            adjust(1)
             continue
 
         if ch in (10, 13, curses.KEY_ENTER, ord(" "), ord("\n")):
@@ -1552,19 +1615,8 @@ def run_menu(
                     continue
                 stdscr.nodelay(True)
                 return key
-
             if kind == "choice":
-                cur = str(getattr(settings, key))
-                if key == "render_mode":
-                    settings.render_mode = cycle_value(render_choices, cur, 1)  # type: ignore
-                elif key in ("colors", "unicode", "mouse_look"):
-                    setattr(settings, key, cycle_value(onoffauto, cur, 1))
-                elif key == "hud":
-                    settings.hud = cycle_value(hud_choices, cur, 1)  # type: ignore
-                elif key == "game_mode":
-                    settings.game_mode = cycle_value(mode_choices, cur, 1)  # type: ignore
-                elif key == "language":
-                    settings.language = cycle_value(lang_choices, cur, 1)
+                adjust(1)
                 continue
 
         if ch in (ord("q"), ord("Q")):
@@ -1573,9 +1625,8 @@ def run_menu(
                 return "quit"
 
 
-# -------------------- Win screen --------------------
-
-def win_screen(stdscr, tr: Callable[[str], str], seconds: float, style: Style, wait: bool) -> None:
+# ----- Win screen -----
+def win_screen(stdscr, tr: Callable[[str], str], seconds: float, wait: bool) -> None:
     stdscr.erase()
     h, w = stdscr.getmaxyx()
 
@@ -1589,7 +1640,6 @@ def win_screen(stdscr, tr: Callable[[str], str], seconds: float, style: Style, w
         safe_addstr(stdscr, y + i, x, msg[: max(0, w - x - 1)], curses.A_BOLD)
 
     stdscr.refresh()
-
     if wait:
         stdscr.nodelay(False)
         stdscr.getch()
@@ -1598,8 +1648,7 @@ def win_screen(stdscr, tr: Callable[[str], str], seconds: float, style: Style, w
         time.sleep(0.9)
 
 
-# -------------------- Game loop --------------------
-
+# ----- Main game loop -----
 def main(stdscr) -> None:
     curses.curs_set(0)
     stdscr.keypad(True)
@@ -1611,7 +1660,7 @@ def main(stdscr) -> None:
     mouse_possible = set_mouse_tracking(True)
     set_mouse_tracking(False)
 
-    settings = Settings()  # default language is English
+    settings = Settings()
     caps = detect_caps(base_style, mouse_possible)
 
     action = run_menu(stdscr, base_style, caps, settings, mode="start")
@@ -1629,6 +1678,7 @@ def main(stdscr) -> None:
 
         style = effective_style(base_style, settings)
 
+        # Mouse
         if settings.mouse_look == "off":
             mouse_active = False
             set_mouse_tracking(False)
@@ -1637,12 +1687,16 @@ def main(stdscr) -> None:
         else:
             mouse_active = mouse_possible and set_mouse_tracking(True)
 
-        player = Player(x=1.5, y=1.5, ang=0.0)
+        # Player
+        player = Player(x=1.5, y=1.5, z=0.0, ang=0.0, vz=0.0)
+        resolve_floor_collision(grid, player)
+
         show_map = False
 
+        # Demo path for demo_default
         demo_path: Optional[List[Tuple[int, int]]] = None
         demo_idx = 0
-        if settings.game_mode == "demo":
+        if settings.mode == "demo_default":
             demo_path = find_path_cells(grid, (int(player.x), int(player.y)), goal_xy)
             demo_idx = 0
 
@@ -1650,15 +1704,18 @@ def main(stdscr) -> None:
         hud_until = start_time + 5.0
         last = start_time
 
-        move_dir = 0
-        rot_dir = 0
+        # Input state
+        move_dir = 0     # -1 back, +1 forward
+        rot_dir = 0      # -1 left, +1 right
         move_until = 0.0
         rot_until = 0.0
+
+        vert_dir = 0     # free: -1 down, +1 up
+        vert_until = 0.0
 
         last_mouse_x: Optional[int] = None
 
         stdscr.nodelay(True)
-
         restart_level = False
 
         while True:
@@ -1668,6 +1725,7 @@ def main(stdscr) -> None:
 
             tr = make_tr(settings.language)
 
+            # HUD visibility policy
             if settings.hud == "always":
                 hud_visible = True
             elif settings.hud == "off":
@@ -1680,6 +1738,17 @@ def main(stdscr) -> None:
                 if chkey == -1:
                     break
 
+                # FOV hotkeys (in game)
+                if chkey == ord("1"):
+                    settings.fov = clamp(settings.fov - FOV_STEP, FOV_MIN, FOV_MAX)
+                    continue
+                if chkey == ord("2"):
+                    settings.fov = clamp(settings.fov + FOV_STEP, FOV_MIN, FOV_MAX)
+                    continue
+                if chkey == ord("3"):
+                    settings.fov = FOV_DEFAULT
+                    continue
+
                 if chkey == 27:
                     menu_action = run_menu(stdscr, base_style, caps, settings, mode="pause")
                     if menu_action == "quit":
@@ -1689,6 +1758,8 @@ def main(stdscr) -> None:
                         break
 
                     style = effective_style(base_style, settings)
+
+                    # Mouse toggle after menu
                     if settings.mouse_look == "off":
                         mouse_active = False
                         set_mouse_tracking(False)
@@ -1697,13 +1768,16 @@ def main(stdscr) -> None:
                     else:
                         mouse_active = mouse_possible and set_mouse_tracking(True)
 
-                    if settings.game_mode == "demo" and demo_path is None:
+                    # if mode switched to demo_default, build path now
+                    if settings.mode == "demo_default":
                         demo_path = find_path_cells(grid, (int(player.x), int(player.y)), goal_xy)
                         demo_idx = 0
-                    if settings.game_mode == "play":
+                    else:
                         demo_path = None
 
                     last = time.monotonic()
+                    if settings.hud == "auto5":
+                        hud_until = last + 5.0
                     continue
 
                 if chkey in (ord("m"), ord("M")):
@@ -1715,7 +1789,8 @@ def main(stdscr) -> None:
                         return
                     continue
 
-                if settings.game_mode == "play":
+                # Manual input only for non-demo modes
+                if settings.mode in ("default", "free"):
                     if chkey in (ord("w"), ord("W")):
                         move_dir = 1
                         move_until = now + HOLD_TIMEOUT
@@ -1728,6 +1803,20 @@ def main(stdscr) -> None:
                     elif chkey in (ord("d"), ord("D")):
                         rot_dir = 1
                         rot_until = now + HOLD_TIMEOUT
+
+                    if settings.mode == "free":
+                        if chkey == ord(" "):  # Space up
+                            vert_dir = 1
+                            vert_until = now + HOLD_TIMEOUT
+                        elif chkey in (ord("x"), ord("X")):  # Down (terminal can't detect bare Shift reliably)
+                            vert_dir = -1
+                            vert_until = now + HOLD_TIMEOUT
+                        elif chkey == curses.KEY_PPAGE:  # PageUp also up
+                            vert_dir = 1
+                            vert_until = now + HOLD_TIMEOUT
+                        elif chkey == curses.KEY_NPAGE:  # PageDown also down
+                            vert_dir = -1
+                            vert_until = now + HOLD_TIMEOUT
 
                 if chkey == curses.KEY_MOUSE and mouse_active:
                     try:
@@ -1746,37 +1835,46 @@ def main(stdscr) -> None:
             if restart_level:
                 break
 
-            if settings.game_mode == "demo":
-                if demo_path is None:
-                    demo_path = find_path_cells(grid, (int(player.x), int(player.y)), goal_xy)
-                    demo_idx = 0
-                else:
-                    demo_idx = demo_step(grid, player, demo_path, demo_idx, dt)
-            else:
-                if now > move_until:
-                    move_dir = 0
-                if now > rot_until:
-                    rot_dir = 0
+            if now > move_until:
+                move_dir = 0
+            if now > rot_until:
+                rot_dir = 0
+            if now > vert_until:
+                vert_dir = 0
 
+            # Rotate (all modes; demo may also rotate internally)
+            if settings.mode in ("default", "free"):
                 if rot_dir:
                     player.ang = normalize_angle(player.ang + rot_dir * ROT_SPEED * dt)
 
+            # Update mode-specific movement
+            if settings.mode == "demo_default":
+                if demo_path is None:
+                    demo_path = find_path_cells(grid, (int(player.x), int(player.y)), goal_xy)
+                    demo_idx = 0
+                demo_idx = demo_walk_step(grid, player, demo_path, demo_idx, dt)
+                player.z = 0.0
+                player.vz = 0.0
+            elif settings.mode == "demo_free":
+                # autopilot flight
+                demo_free_step(grid, player, goal_xy, dt)
+            elif settings.mode == "default":
                 if move_dir:
-                    move = move_dir * MOVE_SPEED * dt
-                    dx = math.cos(player.ang) * move
-                    dy = math.sin(player.ang) * move
-                    nx = player.x + dx
-                    ny = player.y + dy
-                    if not is_wall(grid, int(nx), int(player.y)):
-                        player.x = nx
-                    if not is_wall(grid, int(player.x), int(ny)):
-                        player.y = ny
+                    move_horizontal_default(grid, player, forward=move_dir, dt=dt)
+                player.z = 0.0
+                player.vz = 0.0
+            elif settings.mode == "free":
+                # vertical and horizontal
+                update_free_vertical(grid, player, vert_dir, dt)
+                if move_dir:
+                    move_horizontal_free(grid, player, forward=move_dir, dt=dt)
 
+            # Win check
             gx, gy = goal_xy
             if int(player.x) == gx and int(player.y) == gy:
                 seconds = time.monotonic() - start_time
-                wait = (settings.game_mode != "demo")
-                win_screen(stdscr, tr, seconds, style, wait=wait)
+                wait = settings.mode not in ("demo_default", "demo_free")
+                win_screen(stdscr, tr, seconds, wait=wait)
                 restart_level = True
                 break
 
