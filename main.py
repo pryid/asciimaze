@@ -9,6 +9,7 @@
 - Demo/autosolve modes
 - "Free" mode: vertical movement (fly) with basic collision vs floor/walls
 - On-the-fly FOV: 1 decrease, 2 increase, 3 reset to 60°
+- Camera pitch via arrows up/down; yaw via arrows left/right; R resets camera pitch
 """
 
 from __future__ import annotations
@@ -35,6 +36,8 @@ MAX_RAY_DIST = 40.0
 
 MOVE_SPEED = 3.2
 ROT_SPEED = 2.2
+PITCH_SPEED = 1.7
+PITCH_MAX = math.radians(75.0)
 HOLD_TIMEOUT = 0.14
 
 # Free-mode vertical movement (minecraft-ish creative flight feel)
@@ -100,8 +103,7 @@ LOCALES: Dict[str, Dict[str, str]] = {
         "help_nav_leftright": "  ←/→ or A/D — change",
         "help_nav_enter": "  Enter/Space — apply",
         "help_nav_esc": "  ESC — close",
-        "help_in_game": "In game: W/S move, A/D turn, M map, ESC menu, Q quit",
-        "help_fov_keys": "FOV in game: 1 decrease, 2 increase, 3 reset (60°).",
+        "help_in_game": "In game: W/S move, A/D turn, arrows camera, R reset, M map, 1/2/3 FOV, ESC menu, Q quit",
 
         "help_render_title": "Render modes:",
         "help_render_text": "  text    — fast/simple",
@@ -147,8 +149,8 @@ LOCALES: Dict[str, Dict[str, str]] = {
         "cap_mouse_no": "mouse×",
         "warn_mouse": "(!)",
 
-        "hud_line1_default": "W/S move  A/D turn  M map  1/2/3 FOV  ESC menu  Q quit",
-        "hud_line1_free": "W/S move  A/D turn  Space up  X down  1/2/3 FOV  ESC menu  Q quit",
+        "hud_line1_default": "W/S move  A/D turn  Arrows camera  R reset  M map  1/2/3 FOV  ESC menu  Q quit",
+        "hud_line1_free": "W/S move  A/D turn  Arrows camera  Space up  X down  R reset  1/2/3 FOV  ESC menu  Q quit",
         "hud_line2": "Mode:{mode}  Diff:{diff:3d}  To exit:{dist:6.1f}  FOV:{fov:5.1f}°  Render:{render}  {tags}",
 
         "tag_ascii": "ASCII",
@@ -204,8 +206,7 @@ LOCALES: Dict[str, Dict[str, str]] = {
         "help_nav_leftright": "  ←/→ или A/D — изменить",
         "help_nav_enter": "  Enter/Space — применить",
         "help_nav_esc": "  ESC — закрыть",
-        "help_in_game": "В игре: W/S ход, A/D поворот, M карта, ESC меню, Q выход",
-        "help_fov_keys": "FOV в игре: 1 меньше, 2 больше, 3 сброс (60°).",
+        "help_in_game": "В игре: W/S ход, A/D поворот, стрелки камера, R сброс, M карта, 1/2/3 FOV, ESC меню, Q выход",
 
         "help_render_title": "Рендеры:",
         "help_render_text": "  text    — быстро/просто",
@@ -251,8 +252,8 @@ LOCALES: Dict[str, Dict[str, str]] = {
         "cap_mouse_no": "мышь×",
         "warn_mouse": "(!)",
 
-        "hud_line1_default": "W/S:движ  A/D:поворот  M:карта  1/2/3:FOV  ESC:меню  Q:выход",
-        "hud_line1_free": "W/S:движ  A/D:поворот  Space:вверх  X:вниз  1/2/3:FOV  ESC:меню  Q:выход",
+        "hud_line1_default": "W/S:движ  A/D:поворот  Стрелки:камера  R:сброс  M:карта  1/2/3:FOV  ESC:меню  Q:выход",
+        "hud_line1_free": "W/S:движ  A/D:поворот  Стрелки:камера  Space:вверх  X:вниз  R:сброс  1/2/3:FOV  ESC:меню  Q:выход",
         "hud_line2": "Режим:{mode}  Сложн:{diff:3d}  До выхода:{dist:6.1f}  FOV:{fov:5.1f}°  Рендер:{render}  {tags}",
 
         "tag_ascii": "ASCII",
@@ -286,22 +287,14 @@ def make_tr(lang: str) -> Callable[[str], str]:
     return tr
 
 
-def prefer_utf8() -> bool:
-    enc = (
-        (sys.stdout.encoding or "") +
-        "|" + locale.getpreferredencoding(False) +
-        "|" + (os.environ.get("LC_ALL") or "") +
-        "|" + (os.environ.get("LANG") or "")
-    ).upper()
-    return ("UTF-8" in enc) or ("UTF8" in enc)
-
-
+# ----- Data structures -----
 @dataclass
 class Player:
     x: float
     y: float
     z: float
     ang: float
+    pitch: float = 0.0
     vz: float = 0.0  # vertical velocity (free mode)
 
 
@@ -354,7 +347,14 @@ class Style:
             attr |= curses.A_BOLD
         return attr
 
-    def floor_attr(self, y: int, view_h: int) -> int:
+    def floor_attr_dist(self, dist: float) -> int:
+        if not self.colors_ok or not self.floor_pairs:
+            return curses.A_NORMAL
+        t = clamp(dist / MAX_RAY_DIST, 0.0, 1.0)
+        idx = int(t * (len(self.floor_pairs) - 1))
+        return curses.color_pair(self.floor_pairs[idx])
+
+    def floor_attr_grad(self, y: int, view_h: int) -> int:
         if not self.colors_ok or not self.floor_pairs:
             return curses.A_NORMAL
         t = clamp((y - view_h * 0.5) / max(1.0, view_h * 0.5), 0.0, 1.0)
@@ -374,7 +374,30 @@ class Style:
             return "▒"
         return "░"
 
-    def floor_char(self, y: int, view_h: int) -> str:
+    def wall_char_top(self, dist: float) -> str:
+        # Slightly lighter top surface
+        if not self.unicode_ok:
+            t = clamp(dist / MAX_RAY_DIST, 0.0, 1.0)
+            idx = int(t * (len(ASCII_WALL_SHADES) - 1))
+            return ASCII_WALL_SHADES[idx]
+        if dist < 2.5:
+            return "▓"
+        if dist < 6.0:
+            return "▒"
+        if dist < 14.0:
+            return "░"
+        return "·"
+
+    def floor_char_dist(self, dist: float) -> str:
+        if not self.unicode_ok:
+            t = clamp(dist / MAX_RAY_DIST, 0.0, 1.0)
+            idx = int(t * (len(ASCII_FLOOR_SHADES) - 1))
+            return ASCII_FLOOR_SHADES[idx]
+        t = clamp(dist / MAX_RAY_DIST, 0.0, 1.0)
+        idx = int(t * (len(UNICODE_FLOOR_CHARS) - 1))
+        return UNICODE_FLOOR_CHARS[idx]
+
+    def floor_char_grad(self, y: int, view_h: int) -> str:
         if not self.unicode_ok:
             t = clamp((y - view_h * 0.5) / max(1.0, view_h * 0.5), 0.0, 1.0)
             idx = int(t * (len(ASCII_FLOOR_SHADES) - 1))
@@ -384,6 +407,7 @@ class Style:
         return UNICODE_FLOOR_CHARS[idx]
 
 
+# ----- Small utils -----
 def safe_addstr(stdscr, y: int, x: int, s: str, attr: int = 0) -> None:
     try:
         stdscr.addstr(y, x, s, attr)
@@ -403,6 +427,17 @@ def normalize_angle(a: float) -> float:
     return a
 
 
+def prefer_utf8() -> bool:
+    enc = (
+        (sys.stdout.encoding or "") +
+        "|" + locale.getpreferredencoding(False) +
+        "|" + (os.environ.get("LC_ALL") or "") +
+        "|" + (os.environ.get("LANG") or "")
+    ).upper()
+    return ("UTF-8" in enc) or ("UTF8" in enc)
+
+
+# ----- Style init -----
 def init_style(stdscr) -> Style:
     unicode_ok = prefer_utf8()
 
@@ -580,7 +615,6 @@ def generate_maze(cell_w: int, cell_h: int, rng: random.Random) -> List[str]:
             nx, ny = cx + dx, cy + dy
             if 0 <= nx < cell_w and 0 <= ny < cell_h and not visited[ny][nx]:
                 neigh.append((nx, ny))
-
         if neigh:
             nx, ny = rng.choice(neigh)
             visited[ny][nx] = True
@@ -602,14 +636,12 @@ def is_wall(grid: List[str], x: int, y: int) -> bool:
 
 
 def cell_floor_height(grid: List[str], x: int, y: int) -> float:
-    # open floor at 0, wall top at 1
     if y < 0 or y >= len(grid) or x < 0 or x >= len(grid[0]):
         return WALL_HEIGHT
     return WALL_HEIGHT if grid[y][x] == WALL else 0.0
 
 
 def can_enter_cell(grid: List[str], x: float, y: float, z_feet: float) -> bool:
-    # You can occupy a wall cell only if you're at/above its top.
     fx = int(x)
     fy = int(y)
     floor = cell_floor_height(grid, fx, fy)
@@ -622,7 +654,6 @@ def resolve_floor_collision(grid: List[str], player: Player) -> None:
         player.z = floor
         if player.vz < 0:
             player.vz = 0.0
-    # clamp max height
     if player.z > FREE_MAX_Z:
         player.z = FREE_MAX_Z
         if player.vz > 0:
@@ -768,7 +799,6 @@ def find_path_cells(grid: List[str], start: Tuple[int, int], goal: Tuple[int, in
 
 
 def demo_walk_step(grid: List[str], player: Player, path: List[Tuple[int, int]], idx: int, dt: float) -> int:
-    """Auto-walk along BFS path (default demo)."""
     if not path or idx >= len(path) - 1:
         return idx
 
@@ -816,13 +846,11 @@ def demo_walk_step(grid: List[str], player: Player, path: List[Tuple[int, int]],
 
 # ----- Free-mode physics and demo_free autopilot -----
 def update_free_vertical(grid: List[str], player: Player, vert_dir: int, dt: float) -> None:
-    # vert_dir: +1 up, -1 down, 0 none
     if vert_dir > 0:
         player.vz += FREE_ACCEL * dt
     elif vert_dir < 0:
         player.vz -= FREE_ACCEL * dt
     else:
-        # damp toward 0
         k = min(1.0, FREE_DAMP * dt)
         player.vz *= (1.0 - k)
 
@@ -858,7 +886,6 @@ def move_horizontal_free(grid: List[str], player: Player, forward: float, dt: fl
 
 
 def demo_free_step(grid: List[str], player: Player, goal_xy: Tuple[int, int], dt: float) -> None:
-    """Auto-solve in free mode: climb, fly straight to exit, descend near the end."""
     tx = goal_xy[0] + 0.5
     ty = goal_xy[1] + 0.5
 
@@ -866,12 +893,10 @@ def demo_free_step(grid: List[str], player: Player, goal_xy: Tuple[int, int], dt
     dy = ty - player.y
     dist = math.hypot(dx, dy)
 
-    # Choose target altitude
-    cruise = 1.2
+    cruise = 1.35
     if dist > 2.0:
         target_z = cruise
     else:
-        # descend to floor at goal cell (typically 0)
         target_z = cell_floor_height(grid, goal_xy[0], goal_xy[1])
 
     if player.z < target_z - 0.05:
@@ -888,9 +913,24 @@ def demo_free_step(grid: List[str], player: Player, goal_xy: Tuple[int, int], dt
     if abs(diff) > 0.01:
         player.ang = normalize_angle(player.ang + clamp(diff, -max_rot, max_rot))
 
-    # Move when mostly facing the target
     if abs(diff) < 0.45:
         move_horizontal_free(grid, player, forward=1.0, dt=dt)
+
+
+# ----- Camera projection helpers -----
+def pitch_mid(height: float, pitch: float) -> float:
+    # pitch > 0 => look down => horizon moves up (mid smaller)
+    return height * 0.5 - pitch * (height / math.pi)
+
+
+def compute_wall_span(height: int, dist: float, cam_z: float, mid: float) -> Tuple[int, int]:
+    proj_plane = height * 1.25
+    proj = proj_plane / max(0.0001, dist)
+    top = int(mid - (WALL_HEIGHT - cam_z) * proj)
+    bot = int(mid - (0.0 - cam_z) * proj)
+    if top > bot:
+        top, bot = bot, top
+    return top, bot
 
 
 # ----- Renderer selection -----
@@ -904,18 +944,14 @@ def choose_renderer(settings: Settings, style: Style) -> RenderMode:
 
 def option_display(tr: Callable[[str], str], key: str, value: str) -> str:
     mapping = {
-        # toggles
         "auto": "opt_auto",
         "on": "opt_on",
         "off": "opt_off",
-        # renderer
         "text": "opt_text",
         "half": "opt_half",
         "braille": "opt_braille",
-        # hud
         "auto5": "opt_auto5",
         "always": "opt_always",
-        # modes
         "default": "opt_default",
         "free": "opt_free",
         "demo_default": "opt_demo_default",
@@ -948,7 +984,7 @@ def draw_hud(stdscr, tr: Callable[[str], str], player: Player, goal_xy: Tuple[in
         tags.append(tr("tag_mouse"))
     if settings.mode in ("demo_default", "demo_free"):
         tags.append(tr("tag_demo"))
-    if settings.mode in ("free", "demo_free"):
+    if is_free:
         tags.append(tr("tag_free"))
 
     tag_str = "+".join(tags)
@@ -972,22 +1008,47 @@ def draw_hud(stdscr, tr: Callable[[str], str], player: Player, goal_xy: Tuple[in
     safe_addstr(stdscr, h - 1, 0, line2[: max(0, w - 1)], attr)
 
 
-# ----- 3D renderers with camera height -----
-def compute_wall_span(view_h: int, dist: float, cam_z: float) -> Tuple[int, int]:
-    # projection factor for 1-unit wall height
-    proj = (view_h * 1.25) / max(0.0001, dist)
-    top = int(view_h * 0.5 - (WALL_HEIGHT - cam_z) * proj)
-    bot = int(view_h * 0.5 - (0.0 - cam_z) * proj)
-    return top, bot
+# ----- Floor casting / wall-top rendering helper -----
+def floorcast_sample_row(
+    grid: List[str],
+    px: float, py: float,
+    cos_arr: List[float], sin_arr: List[float],
+    dist_plane: float,
+    dist_plane_top: Optional[float],
+    style: Style,
+) -> Tuple[List[bool], str, int, str, int]:
+    """
+    For a given row, decide per column whether it hits wall top (if dist_plane_top not None).
+    Returns:
+      hit_top_mask (len=cols),
+      floor_char, floor_attr,
+      top_char, top_attr
+    """
+    cols = len(cos_arr)
+    hit_top = [False] * cols
+
+    # compute shading per plane once
+    d_floor = min(dist_plane, MAX_RAY_DIST)
+    floor_ch = style.floor_char_dist(d_floor)
+    floor_attr = style.floor_attr_dist(d_floor) if style.colors_ok else curses.A_NORMAL
+
+    top_ch = floor_ch
+    top_attr = floor_attr
+    if dist_plane_top is not None:
+        d_top = min(dist_plane_top, MAX_RAY_DIST)
+        top_ch = style.wall_char_top(d_top)
+        top_attr = style.wall_attr(d_top, 0) if style.colors_ok else curses.A_BOLD if style.unicode_ok else curses.A_NORMAL
+
+        for i in range(cols):
+            wx = px + cos_arr[i] * dist_plane_top
+            wy = py + sin_arr[i] * dist_plane_top
+            if is_wall(grid, int(wx), int(wy)):
+                hit_top[i] = True
+
+    return hit_top, floor_ch, floor_attr, top_ch, top_attr
 
 
-def compute_wall_span_pix(pix_h: int, dist: float, cam_z: float) -> Tuple[int, int]:
-    proj = (pix_h * 1.25) / max(0.0001, dist)
-    top = int(pix_h * 0.5 - (WALL_HEIGHT - cam_z) * proj)
-    bot = int(pix_h * 0.5 - (0.0 - cam_z) * proj)
-    return top, bot
-
-
+# ----- Renderers -----
 def render_text(stdscr, tr: Callable[[str], str], grid: List[str], player: Player, goal_xy: Tuple[int, int],
                 settings: Settings, style: Style, hud_visible: bool, mouse_active: bool) -> None:
     h, w = stdscr.getmaxyx()
@@ -1001,31 +1062,73 @@ def render_text(stdscr, tr: Callable[[str], str], grid: List[str], player: Playe
     view_w = max(1, w - 1)
     fov = settings.fov
     cam_z = player.z + EYE_HEIGHT
+    mid = pitch_mid(view_h, player.pitch)
+
+    # enable floor casting (shows wall tops) mostly when camera high or pitch not zero
+    use_floorcast = cam_z > 0.75 or abs(player.pitch) > 0.25
+    proj_plane = view_h * 1.25
 
     tops = [0] * view_w
     bots = [0] * view_w
     wall_chars = [" "] * view_w
     wall_attrs = [0] * view_w
+    cos_arr = [0.0] * view_w
+    sin_arr = [0.0] * view_w
 
     for x in range(view_w):
         ray_ang = player.ang - fov / 2.0 + (x / max(1, view_w - 1)) * fov
+        ca = math.cos(ray_ang)
+        sa = math.sin(ray_ang)
+        cos_arr[x] = ca
+        sin_arr[x] = sa
+
         dist, side = cast_ray(grid, player.x, player.y, ray_ang)
         dist *= max(0.0001, math.cos(ray_ang - player.ang))
         dist = max(0.0001, dist)
 
-        top, bot = compute_wall_span(view_h, dist, cam_z)
+        top, bot = compute_wall_span(view_h, dist, cam_z, mid)
         tops[x] = top
         bots[x] = bot
         wall_chars[x] = style.wall_char_text(dist)
         wall_attrs[x] = style.wall_attr(dist, side)
 
     for y in range(view_h):
+        # precompute floorcast mask for this row if needed
+        row_top_mask = None
+        floor_ch = " "
+        floor_attr = curses.A_NORMAL
+        top_ch = " "
+        top_attr = curses.A_NORMAL
+
+        if use_floorcast:
+            den = (y + 0.5) - mid
+            if den > 0.0001:
+                dist_floor = (cam_z) * proj_plane / den
+                dist_top = None
+                if cam_z > WALL_HEIGHT + 0.02:
+                    dist_top = (cam_z - WALL_HEIGHT) * proj_plane / den
+                    if dist_top <= 0:
+                        dist_top = None
+                row_top_mask, floor_ch, floor_attr, top_ch, top_attr = floorcast_sample_row(
+                    grid, player.x, player.y,
+                    cos_arr, sin_arr,
+                    dist_floor, dist_top,
+                    style
+                )
+
         x = 0
         while x < view_w:
             if y < tops[x]:
                 ch = " "; attr = curses.A_NORMAL
             elif y >= bots[x]:
-                ch = style.floor_char(y, view_h); attr = style.floor_attr(y, view_h)
+                if use_floorcast and row_top_mask is not None:
+                    if row_top_mask[x]:
+                        ch = top_ch; attr = top_attr
+                    else:
+                        ch = floor_ch; attr = floor_attr
+                else:
+                    ch = style.floor_char_grad(y, view_h)
+                    attr = style.floor_attr_grad(y, view_h)
             else:
                 ch = wall_chars[x]; attr = wall_attrs[x]
 
@@ -1036,7 +1139,14 @@ def render_text(stdscr, tr: Callable[[str], str], grid: List[str], player: Playe
                 if y < tops[x]:
                     ch2 = " "; attr2 = curses.A_NORMAL
                 elif y >= bots[x]:
-                    ch2 = style.floor_char(y, view_h); attr2 = style.floor_attr(y, view_h)
+                    if use_floorcast and row_top_mask is not None:
+                        if row_top_mask[x]:
+                            ch2 = top_ch; attr2 = top_attr
+                        else:
+                            ch2 = floor_ch; attr2 = floor_attr
+                    else:
+                        ch2 = style.floor_char_grad(y, view_h)
+                        attr2 = style.floor_attr_grad(y, view_h)
                 else:
                     ch2 = wall_chars[x]; attr2 = wall_attrs[x]
                 if attr2 != attr:
@@ -1063,18 +1173,28 @@ def render_halfblock(stdscr, tr: Callable[[str], str], grid: List[str], player: 
     cam_z = player.z + EYE_HEIGHT
 
     pix_h = view_h * 2
+    mid_pix = pitch_mid(pix_h, player.pitch)
+
+    use_floorcast = cam_z > 0.75 or abs(player.pitch) > 0.25
+    proj_plane = pix_h * 1.25
+
     top_pix = [0] * view_w
     bot_pix = [0] * view_w
     attr_col = [0] * view_w
     full_char_col = ["█"] * view_w
+    cos_arr = [0.0] * view_w
+    sin_arr = [0.0] * view_w
 
     for x in range(view_w):
         ray_ang = player.ang - fov / 2.0 + (x / max(1, view_w - 1)) * fov
+        cos_arr[x] = math.cos(ray_ang)
+        sin_arr[x] = math.sin(ray_ang)
+
         dist, side = cast_ray(grid, player.x, player.y, ray_ang)
         dist *= max(0.0001, math.cos(ray_ang - player.ang))
         dist = max(0.0001, dist)
 
-        tp, bp = compute_wall_span_pix(pix_h, dist, cam_z)
+        tp, bp = compute_wall_span(pix_h, dist, cam_z, mid_pix)
         top_pix[x] = tp
         bot_pix[x] = bp
         attr_col[x] = style.wall_attr(dist, side)
@@ -1083,6 +1203,29 @@ def render_halfblock(stdscr, tr: Callable[[str], str], grid: List[str], player: 
     for y in range(view_h):
         y_top = 2 * y
         y_bot = y_top + 1
+
+        # Floorcast row precompute using bottom subpixel as representative
+        row_top_mask = None
+        floor_ch = " "
+        floor_attr = curses.A_NORMAL
+        top_ch = " "
+        top_attr = curses.A_NORMAL
+        if use_floorcast:
+            den = (y_bot + 0.5) - mid_pix
+            if den > 0.0001:
+                dist_floor = cam_z * proj_plane / den
+                dist_top = None
+                if cam_z > WALL_HEIGHT + 0.02:
+                    dist_top = (cam_z - WALL_HEIGHT) * proj_plane / den
+                    if dist_top <= 0:
+                        dist_top = None
+                row_top_mask, floor_ch, floor_attr, top_ch, top_attr = floorcast_sample_row(
+                    grid, player.x, player.y,
+                    cos_arr, sin_arr,
+                    dist_floor, dist_top,
+                    style
+                )
+
         x = 0
         while x < view_w:
             def cell(xi: int) -> Tuple[str, int]:
@@ -1095,9 +1238,16 @@ def render_halfblock(stdscr, tr: Callable[[str], str], grid: List[str], player: 
                     return ("▀" if style.unicode_ok else full_char_col[xi]), attr_col[xi]
                 if not top_on and bot_on:
                     return ("▄" if style.unicode_ok else full_char_col[xi]), attr_col[xi]
+
+                # floor/ground/top
+                if use_floorcast and row_top_mask is not None:
+                    if row_top_mask[xi]:
+                        return top_ch, top_attr
+                    return floor_ch, floor_attr
+
                 if y < view_h // 2:
                     return " ", curses.A_NORMAL
-                return style.floor_char(y, view_h), style.floor_attr(y, view_h)
+                return style.floor_char_grad(y, view_h), style.floor_attr_grad(y, view_h)
 
             ch, attr = cell(x)
             start = x
@@ -1140,11 +1290,23 @@ def render_braille(stdscr, tr: Callable[[str], str], grid: List[str], player: Pl
 
     sub_w = view_w * 2
     pix_h = view_h * 4
+    mid_pix = pitch_mid(pix_h, player.pitch)
+
+    use_floorcast = cam_z > 0.75 or abs(player.pitch) > 0.25
+    proj_plane = pix_h * 1.25
 
     dist_sub = [0.0] * sub_w
     side_sub = [0] * sub_w
     top_p = [0] * sub_w
     bot_p = [0] * sub_w
+    cos_col = [0.0] * view_w
+    sin_col = [0.0] * view_w
+
+    # precompute representative ray dirs for floor casting (per output column)
+    for x in range(view_w):
+        ray_ang = player.ang - fov / 2.0 + (x / max(1, view_w - 1)) * fov
+        cos_col[x] = math.cos(ray_ang)
+        sin_col[x] = math.sin(ray_ang)
 
     for sx in range(sub_w):
         ray_ang = player.ang - fov / 2.0 + (sx / max(1, sub_w - 1)) * fov
@@ -1155,24 +1317,47 @@ def render_braille(stdscr, tr: Callable[[str], str], grid: List[str], player: Pl
         dist_sub[sx] = dist
         side_sub[sx] = side
 
-        tp, bp = compute_wall_span_pix(pix_h, dist, cam_z)
+        tp, bp = compute_wall_span(pix_h, dist, cam_z, mid_pix)
         top_p[sx] = tp
         bot_p[sx] = bp
 
     for y in range(view_h):
+        # floorcast precompute at center of 4px block
+        row_top_mask = None
+        floor_ch = " "
+        floor_attr = curses.A_NORMAL
+        top_ch = " "
+        top_attr = curses.A_NORMAL
+
+        if use_floorcast:
+            py = y * 4 + 2
+            den = (py + 0.5) - mid_pix
+            if den > 0.0001:
+                dist_floor = cam_z * proj_plane / den
+                dist_top = None
+                if cam_z > WALL_HEIGHT + 0.02:
+                    dist_top = (cam_z - WALL_HEIGHT) * proj_plane / den
+                    if dist_top <= 0:
+                        dist_top = None
+                row_top_mask, floor_ch, floor_attr, top_ch, top_attr = floorcast_sample_row(
+                    grid, player.x, player.y,
+                    cos_col, sin_col,
+                    dist_floor, dist_top,
+                    style
+                )
+
         x = 0
         while x < view_w:
             def cell(xi: int) -> Tuple[str, int]:
                 bits = 0
-                base_y = 4 * y
                 for sub_col in (0, 1):
                     sx = 2 * xi + sub_col
                     tp = top_p[sx]; bp = bot_p[sx]
+                    base_y = 4 * y
                     for sub_row in range(4):
                         py = base_y + sub_row
                         if tp <= py < bp:
                             bits |= _BRAILLE_BITS[(sub_col, sub_row)]
-
                 if bits:
                     sx0 = 2 * xi
                     sx1 = sx0 + 1
@@ -1182,9 +1367,14 @@ def render_braille(stdscr, tr: Callable[[str], str], grid: List[str], player: Pl
                         d = dist_sub[sx1]; side = side_sub[sx1]
                     return chr(0x2800 + bits), style.wall_attr(d, side)
 
+                if use_floorcast and row_top_mask is not None:
+                    if row_top_mask[xi]:
+                        return top_ch, top_attr
+                    return floor_ch, floor_attr
+
                 if y < view_h // 2:
                     return " ", curses.A_NORMAL
-                return style.floor_char(y, view_h), style.floor_attr(y, view_h)
+                return style.floor_char_grad(y, view_h), style.floor_attr_grad(y, view_h)
 
             ch, attr = cell(x)
             start = x
@@ -1213,7 +1403,7 @@ def render_scene(stdscr, tr: Callable[[str], str], renderer: RenderMode, grid: L
         render_text(stdscr, tr, grid, player, goal_xy, settings, style, hud_visible, mouse_active)
 
 
-# ----- Map rendering -----
+# ----- Map rendering (same as before, doesn't care about z/pitch) -----
 def render_map(stdscr, tr: Callable[[str], str], grid: List[str], player: Player, goal_xy: Tuple[int, int], settings: Settings, style: Style) -> None:
     h, w = stdscr.getmaxyx()
     if h < 8 or w < 24:
@@ -1432,7 +1622,7 @@ def run_menu(stdscr, base_style: Style, caps: Capabilities, settings: Settings, 
                 return "resume" if mode == "pause" else "start"
             continue
 
-        box_w = min(92, W - 4)
+        box_w = min(94, W - 4)
         box_h = min(30, H - 4)
         box_x = (W - box_w) // 2
         box_y = (H - box_h) // 2
@@ -1502,7 +1692,6 @@ def run_menu(stdscr, base_style: Style, caps: Capabilities, settings: Settings, 
             line = (prefix if is_sel else pad) + f"{label:<{label_width}} {value}{warn}"
             safe_addstr(stdscr, y, left_x, line[: left_w], attr)
 
-        # help panel
         label_key, kind, key = items[sel]
         label = tr(label_key)
         help_lines = [
@@ -1515,7 +1704,6 @@ def run_menu(stdscr, base_style: Style, caps: Capabilities, settings: Settings, 
             tr("help_nav_esc"),
             "",
             tr("help_in_game"),
-            tr("help_fov_keys"),
             "",
         ]
 
@@ -1578,7 +1766,6 @@ def run_menu(stdscr, base_style: Style, caps: Capabilities, settings: Settings, 
             continue
 
         def adjust(delta: int) -> None:
-            nonlocal sel
             label_key, kind, key = items[sel]
             if kind == "range":
                 if key == "difficulty":
@@ -1648,7 +1835,7 @@ def win_screen(stdscr, tr: Callable[[str], str], seconds: float, wait: bool) -> 
         time.sleep(0.9)
 
 
-# ----- Main game loop -----
+# ----- Main loop -----
 def main(stdscr) -> None:
     curses.curs_set(0)
     stdscr.keypad(True)
@@ -1688,7 +1875,7 @@ def main(stdscr) -> None:
             mouse_active = mouse_possible and set_mouse_tracking(True)
 
         # Player
-        player = Player(x=1.5, y=1.5, z=0.0, ang=0.0, vz=0.0)
+        player = Player(x=1.5, y=1.5, z=0.0, ang=0.0, pitch=0.0, vz=0.0)
         resolve_floor_collision(grid, player)
 
         show_map = False
@@ -1707,10 +1894,12 @@ def main(stdscr) -> None:
         # Input state
         move_dir = 0     # -1 back, +1 forward
         rot_dir = 0      # -1 left, +1 right
+        pitch_dir = 0    # -1 up, +1 down
+        vert_dir = 0     # free: -1 down, +1 up
+
         move_until = 0.0
         rot_until = 0.0
-
-        vert_dir = 0     # free: -1 down, +1 up
+        pitch_until = 0.0
         vert_until = 0.0
 
         last_mouse_x: Optional[int] = None
@@ -1738,7 +1927,7 @@ def main(stdscr) -> None:
                 if chkey == -1:
                     break
 
-                # FOV hotkeys (in game)
+                # FOV hotkeys
                 if chkey == ord("1"):
                     settings.fov = clamp(settings.fov - FOV_STEP, FOV_MIN, FOV_MAX)
                     continue
@@ -1747,6 +1936,14 @@ def main(stdscr) -> None:
                     continue
                 if chkey == ord("3"):
                     settings.fov = FOV_DEFAULT
+                    continue
+
+                # Camera reset
+                if chkey in (ord("r"), ord("R")):
+                    player.pitch = 0.0
+                    last_mouse_x = None
+                    if settings.mode in ("free", "demo_free"):
+                        player.vz = 0.0
                     continue
 
                 if chkey == 27:
@@ -1768,7 +1965,6 @@ def main(stdscr) -> None:
                     else:
                         mouse_active = mouse_possible and set_mouse_tracking(True)
 
-                    # if mode switched to demo_default, build path now
                     if settings.mode == "demo_default":
                         demo_path = find_path_cells(grid, (int(player.x), int(player.y)), goal_xy)
                         demo_idx = 0
@@ -1787,6 +1983,24 @@ def main(stdscr) -> None:
                 if chkey in (ord("q"), ord("Q")):
                     if confirm_yes_no(stdscr, tr, "prompt_exit"):
                         return
+                    continue
+
+                # Arrow keys: camera control (always)
+                if chkey == curses.KEY_LEFT:
+                    rot_dir = -1
+                    rot_until = now + HOLD_TIMEOUT
+                    continue
+                if chkey == curses.KEY_RIGHT:
+                    rot_dir = 1
+                    rot_until = now + HOLD_TIMEOUT
+                    continue
+                if chkey == curses.KEY_UP:
+                    pitch_dir = -1
+                    pitch_until = now + HOLD_TIMEOUT
+                    continue
+                if chkey == curses.KEY_DOWN:
+                    pitch_dir = 1
+                    pitch_until = now + HOLD_TIMEOUT
                     continue
 
                 # Manual input only for non-demo modes
@@ -1808,13 +2022,13 @@ def main(stdscr) -> None:
                         if chkey == ord(" "):  # Space up
                             vert_dir = 1
                             vert_until = now + HOLD_TIMEOUT
-                        elif chkey in (ord("x"), ord("X")):  # Down (terminal can't detect bare Shift reliably)
+                        elif chkey in (ord("x"), ord("X")):  # Down
                             vert_dir = -1
                             vert_until = now + HOLD_TIMEOUT
-                        elif chkey == curses.KEY_PPAGE:  # PageUp also up
+                        elif chkey == curses.KEY_PPAGE:
                             vert_dir = 1
                             vert_until = now + HOLD_TIMEOUT
-                        elif chkey == curses.KEY_NPAGE:  # PageDown also down
+                        elif chkey == curses.KEY_NPAGE:
                             vert_dir = -1
                             vert_until = now + HOLD_TIMEOUT
 
@@ -1835,17 +2049,26 @@ def main(stdscr) -> None:
             if restart_level:
                 break
 
+            # timeouts
             if now > move_until:
                 move_dir = 0
             if now > rot_until:
                 rot_dir = 0
+            if now > pitch_until:
+                pitch_dir = 0
             if now > vert_until:
                 vert_dir = 0
 
-            # Rotate (all modes; demo may also rotate internally)
-            if settings.mode in ("default", "free"):
-                if rot_dir:
-                    player.ang = normalize_angle(player.ang + rot_dir * ROT_SPEED * dt)
+            # Apply camera pitch (all modes)
+            if pitch_dir:
+                player.pitch = clamp(player.pitch + pitch_dir * PITCH_SPEED * dt, -PITCH_MAX, PITCH_MAX)
+
+            # Apply yaw if manual (default/free) OR user uses arrows even in demo
+            if rot_dir and settings.mode in ("default", "free"):
+                player.ang = normalize_angle(player.ang + rot_dir * ROT_SPEED * dt)
+            elif rot_dir and settings.mode in ("demo_default", "demo_free"):
+                # allow looking around even in demo (small effect, demo will still steer)
+                player.ang = normalize_angle(player.ang + rot_dir * ROT_SPEED * dt * 0.6)
 
             # Update mode-specific movement
             if settings.mode == "demo_default":
@@ -1856,7 +2079,6 @@ def main(stdscr) -> None:
                 player.z = 0.0
                 player.vz = 0.0
             elif settings.mode == "demo_free":
-                # autopilot flight
                 demo_free_step(grid, player, goal_xy, dt)
             elif settings.mode == "default":
                 if move_dir:
@@ -1864,7 +2086,6 @@ def main(stdscr) -> None:
                 player.z = 0.0
                 player.vz = 0.0
             elif settings.mode == "free":
-                # vertical and horizontal
                 update_free_vertical(grid, player, vert_dir, dt)
                 if move_dir:
                     move_horizontal_free(grid, player, forward=move_dir, dt=dt)
