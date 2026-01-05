@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 from collections import deque
+from typing import Optional
 
 from .constants import FREE_MAX_Z, OPEN, WALL, WALL_HEIGHT
 from .models import Player
@@ -96,7 +97,7 @@ def find_path_cells(
         return [start]
 
     q = deque([start])
-    prev: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
+    prev: dict[tuple[int, int], Optional[tuple[int, int]]] = {start: None}
 
     while q:
         x, y = q.popleft()
@@ -112,7 +113,7 @@ def find_path_cells(
         return [start]
 
     path: list[tuple[int, int]] = []
-    cur: tuple[int, int] | None = goal
+    cur: Optional[tuple[int, int]] = goal
     while cur is not None:
         path.append(cur)
         cur = prev[cur]

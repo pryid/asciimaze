@@ -7,6 +7,7 @@ The runtime is split into three phases per frame:
 """
 
 from __future__ import annotations
+from typing import Optional
 
 import curses
 import locale
@@ -55,7 +56,7 @@ class ControlState:
     pitch_until: float = 0.0
     vert_until: float = 0.0
 
-    last_mouse_x: int | None = None
+    last_mouse_x: Optional[int] = None
 
 
 @dataclass
@@ -68,7 +69,7 @@ class LevelState:
 
     show_map: bool = False
 
-    demo_path: list[tuple[int, int]] | None = None
+    demo_path: Optional[list[tuple[int, int]]] = None
     demo_idx: int = 0
 
     start_time: float = 0.0
@@ -103,7 +104,7 @@ def _new_level(
     player = Player(x=1.5, y=1.5, z=0.0, ang=0.0, pitch=0.0, vz=0.0)
     resolve_floor_collision(grid, player)
 
-    demo_path: list[tuple[int, int]] | None = None
+    demo_path: Optional[list[tuple[int, int]]] = None
     demo_idx = 0
     if settings.mode == "demo_default":
         demo_path = find_path_cells(grid, (int(player.x), int(player.y)), goal_xy)

@@ -43,7 +43,7 @@ def test_find_path_cells_returns_adjacent_open_steps() -> None:
     for x, y in path:
         assert grid[y][x] == OPEN
 
-    for (x1, y1), (x2, y2) in zip(path, path[1:], strict=False):
+    for (x1, y1), (x2, y2) in zip(path, path[1:]):
         dx = abs(x1 - x2)
         dy = abs(y1 - y2)
         assert dx + dy == 1

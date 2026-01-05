@@ -1,6 +1,7 @@
 """Raycasting and projection helpers."""
 
 from __future__ import annotations
+from typing import Optional
 
 import curses
 import math
@@ -76,7 +77,7 @@ def floorcast_sample_row(
     cos_arr: list[float],
     sin_arr: list[float],
     dist_plane: float,
-    dist_plane_top: float | None,
+    dist_plane_top: Optional[float],
     style: Style,
     shadows_on: bool,
 ) -> tuple[list[bool], str, int, str, int]:
