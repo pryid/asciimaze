@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Main game loop and curses entrypoint.
 
 The runtime is split into three phases per frame:
@@ -6,14 +5,15 @@ The runtime is split into three phases per frame:
 - update: simulate player motion/camera and check win conditions
 - render: draw either 3D scene or minimap
 """
+
 from __future__ import annotations
 
 import curses
 import locale
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Tuple
 
 from .constants import (
     FOV_DEFAULT,
@@ -55,20 +55,20 @@ class ControlState:
     pitch_until: float = 0.0
     vert_until: float = 0.0
 
-    last_mouse_x: Optional[int] = None
+    last_mouse_x: int | None = None
 
 
 @dataclass
 class LevelState:
     """All state tied to a single generated level."""
 
-    grid: List[str]
-    goal_xy: Tuple[int, int]
+    grid: list[str]
+    goal_xy: tuple[int, int]
     player: Player
 
     show_map: bool = False
 
-    demo_path: Optional[List[Tuple[int, int]]] = None
+    demo_path: list[tuple[int, int]] | None = None
     demo_idx: int = 0
 
     start_time: float = 0.0
@@ -89,7 +89,9 @@ def _configure_mouse(settings: Settings, mouse_possible: bool) -> bool:
     return mouse_possible and set_mouse_tracking(True)
 
 
-def _new_level(settings: Settings, base_style, rng: random.Random, mouse_possible: bool) -> Tuple[LevelState, Style, bool]:
+def _new_level(
+    settings: Settings, base_style, rng: random.Random, mouse_possible: bool
+) -> tuple[LevelState, Style, bool]:
     """Generate a new maze + initialize player, style and mouse tracking."""
     cw, ch = difficulty_to_size(settings.difficulty)
     grid = generate_maze(cw, ch, rng)
@@ -101,7 +103,7 @@ def _new_level(settings: Settings, base_style, rng: random.Random, mouse_possibl
     player = Player(x=1.5, y=1.5, z=0.0, ang=0.0, pitch=0.0, vz=0.0)
     resolve_floor_collision(grid, player)
 
-    demo_path: Optional[List[Tuple[int, int]]] = None
+    demo_path: list[tuple[int, int]] | None = None
     demo_idx = 0
     if settings.mode == "demo_default":
         demo_path = find_path_cells(grid, (int(player.x), int(player.y)), goal_xy)
@@ -145,7 +147,7 @@ def _read_input(
     mouse_possible: bool,
     mouse_active: bool,
     now: float,
-) -> Tuple[str, Style, bool]:
+) -> tuple[str, Style, bool]:
     """Consume all pending input events.
 
     Returns (action, new_style, new_mouse_active) where action is one of:
@@ -196,7 +198,9 @@ def _read_input(
             mouse_active = _configure_mouse(settings, mouse_possible)
 
             if settings.mode == "demo_default":
-                level.demo_path = find_path_cells(level.grid, (int(level.player.x), int(level.player.y)), level.goal_xy)
+                level.demo_path = find_path_cells(
+                    level.grid, (int(level.player.x), int(level.player.y)), level.goal_xy
+                )
                 level.demo_idx = 0
             else:
                 level.demo_path = None
@@ -283,7 +287,9 @@ def _read_input(
                 if ctrl.last_mouse_x is not None:
                     dxm = mx - ctrl.last_mouse_x
                     if dxm:
-                        level.player.ang = normalize_angle(level.player.ang + dxm * settings.mouse_sens)
+                        level.player.ang = normalize_angle(
+                            level.player.ang + dxm * settings.mouse_sens
+                        )
                 ctrl.last_mouse_x = mx
             else:
                 ctrl.last_mouse_x = mx
@@ -302,12 +308,16 @@ def _expire_controls(ctrl: ControlState, now: float) -> None:
         ctrl.vert_dir = 0
 
 
-def _update_simulation(settings: Settings, level: LevelState, ctrl: ControlState, dt: float) -> None:
+def _update_simulation(
+    settings: Settings, level: LevelState, ctrl: ControlState, dt: float
+) -> None:
     """Update player motion/camera based on settings and current control state."""
     player = level.player
 
     if ctrl.pitch_dir:
-        player.pitch = clamp(player.pitch + ctrl.pitch_dir * PITCH_SPEED * dt, -PITCH_MAX, PITCH_MAX)
+        player.pitch = clamp(
+            player.pitch + ctrl.pitch_dir * PITCH_SPEED * dt, -PITCH_MAX, PITCH_MAX
+        )
 
     if ctrl.rot_dir and settings.mode in ("default", "free"):
         player.ang = normalize_angle(player.ang + ctrl.rot_dir * ROT_SPEED * dt)
@@ -316,7 +326,9 @@ def _update_simulation(settings: Settings, level: LevelState, ctrl: ControlState
 
     if settings.mode == "demo_default":
         if level.demo_path is None:
-            level.demo_path = find_path_cells(level.grid, (int(player.x), int(player.y)), level.goal_xy)
+            level.demo_path = find_path_cells(
+                level.grid, (int(player.x), int(player.y)), level.goal_xy
+            )
             level.demo_idx = 0
         level.demo_idx = demo_walk_step(level.grid, player, level.demo_path, level.demo_idx, dt)
         player.z = 0.0
@@ -353,7 +365,18 @@ def _render_frame(
         render_map(stdscr, tr, level.grid, level.player, level.goal_xy, settings, style)
     else:
         renderer = choose_renderer(settings, style)
-        render_scene(stdscr, tr, renderer, level.grid, level.player, level.goal_xy, settings, style, hud_visible, mouse_active)
+        render_scene(
+            stdscr,
+            tr,
+            renderer,
+            level.grid,
+            level.player,
+            level.goal_xy,
+            settings,
+            style,
+            hud_visible,
+            mouse_active,
+        )
     stdscr.refresh()
 
 
@@ -381,7 +404,6 @@ def main(stdscr) -> None:
     while True:
         level, style, mouse_active = _new_level(settings, base_style, rng, mouse_possible)
         ctrl = ControlState()
-
 
         stdscr.nodelay(True)
         level.restart_level = False

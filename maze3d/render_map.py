@@ -1,10 +1,10 @@
-# -*- coding: utf-8 -*-
 """Minimap rendering."""
+
 from __future__ import annotations
 
 import curses
 import math
-from typing import Callable, List, Tuple
+from collections.abc import Callable
 
 from .constants import WALL
 from .models import Player, Settings
@@ -31,7 +31,15 @@ def player_dir_glyph(style: Style, ang: float) -> str:
     return "◄"
 
 
-def render_map(stdscr, tr: Callable[[str], str], grid: List[str], player: Player, goal_xy: Tuple[int, int], settings: Settings, style: Style) -> None:
+def render_map(
+    stdscr,
+    tr: Callable[[str], str],
+    grid: list[str],
+    player: Player,
+    goal_xy: tuple[int, int],
+    settings: Settings,
+    style: Style,
+) -> None:
     h, w = stdscr.getmaxyx()
     if h < 8 or w < 24:
         stdscr.erase()
@@ -101,19 +109,24 @@ def render_map(stdscr, tr: Callable[[str], str], grid: List[str], player: Player
                 bot_wall = grid[y_bot][mx] == WALL
 
                 if top_wall and bot_wall:
-                    ch = "█"; attr = wall_attr
+                    ch = "█"
+                    attr = wall_attr
                 elif top_wall and not bot_wall:
-                    ch = "▀"; attr = wall_attr
+                    ch = "▀"
+                    attr = wall_attr
                 elif not top_wall and bot_wall:
-                    ch = "▄"; attr = wall_attr
+                    ch = "▄"
+                    attr = wall_attr
                 else:
                     ch = " " if style.colors_ok else "·"
                     attr = floor_attr if style.colors_ok else curses.A_NORMAL
 
                 if oy == oy_g and x == ox_g:
-                    ch = goal_ch; attr = goal_attr
+                    ch = goal_ch
+                    attr = goal_attr
                 if oy == oy_p and x == ox_p:
-                    ch = player_ch; attr = player_attr
+                    ch = player_ch
+                    attr = player_attr
 
                 start = x
                 buf = [ch]
@@ -125,21 +138,27 @@ def render_map(stdscr, tr: Callable[[str], str], grid: List[str], player: Player
                     top_wall2 = grid[y_top][mx2] == WALL
                     bot_wall2 = grid[y_bot][mx2] == WALL
                     if top_wall2 and bot_wall2:
-                        ch2 = "█"; attr2 = wall_attr
+                        ch2 = "█"
+                        attr2 = wall_attr
                     elif top_wall2 and not bot_wall2:
-                        ch2 = "▀"; attr2 = wall_attr
+                        ch2 = "▀"
+                        attr2 = wall_attr
                     elif not top_wall2 and bot_wall2:
-                        ch2 = "▄"; attr2 = wall_attr
+                        ch2 = "▄"
+                        attr2 = wall_attr
                     else:
                         ch2 = " " if style.colors_ok else "·"
                         attr2 = floor_attr if style.colors_ok else curses.A_NORMAL
                     if oy == oy_g and x == ox_g:
-                        ch2 = goal_ch; attr2 = goal_attr
+                        ch2 = goal_ch
+                        attr2 = goal_attr
                     if oy == oy_p and x == ox_p:
-                        ch2 = player_ch; attr2 = player_attr
+                        ch2 = player_ch
+                        attr2 = player_attr
                     if attr2 != attr:
                         break
-                    buf.append(ch2); x += 1
+                    buf.append(ch2)
+                    x += 1
                 safe_addstr(stdscr, oy + header_lines, start, "".join(buf), attr)
     else:
         scale_x = map_w / out_w

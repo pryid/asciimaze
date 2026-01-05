@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Rendering facade.
 
 This module keeps the public rendering API stable while the actual renderers live
@@ -10,9 +9,10 @@ in dedicated modules:
 
 Shared helpers (HUD, renderer selection) are in render_common.py.
 """
+
 from __future__ import annotations
 
-from typing import Callable, List, Tuple
+from collections.abc import Callable
 
 from .constants import RenderMode
 from .models import Player, Settings
@@ -39,9 +39,9 @@ def render_scene(
     stdscr,
     tr: Callable[[str], str],
     renderer: RenderMode,
-    grid: List[str],
+    grid: list[str],
     player: Player,
-    goal_xy: Tuple[int, int],
+    goal_xy: tuple[int, int],
     settings: Settings,
     style: Style,
     hud_visible: bool,
@@ -51,8 +51,12 @@ def render_scene(
     if renderer == "text":
         render_text(stdscr, tr, grid, player, goal_xy, settings, style, hud_visible, mouse_active)
     elif renderer == "half":
-        render_halfblock(stdscr, tr, grid, player, goal_xy, settings, style, hud_visible, mouse_active)
+        render_halfblock(
+            stdscr, tr, grid, player, goal_xy, settings, style, hud_visible, mouse_active
+        )
     elif renderer == "braille":
-        render_braille(stdscr, tr, grid, player, goal_xy, settings, style, hud_visible, mouse_active)
+        render_braille(
+            stdscr, tr, grid, player, goal_xy, settings, style, hud_visible, mouse_active
+        )
     else:
         render_text(stdscr, tr, grid, player, goal_xy, settings, style, hud_visible, mouse_active)

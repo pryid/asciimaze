@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
 """Terminal capabilities and styling (unicode, colors, shading)."""
+
 from __future__ import annotations
 
 import curses
@@ -7,7 +7,7 @@ import locale
 import os
 import sys
 from dataclasses import dataclass
-from typing import List, Literal
+from typing import Literal
 
 from .constants import (
     ASCII_FLOOR_SHADES,
@@ -15,7 +15,9 @@ from .constants import (
     MAX_RAY_DIST,
     UNICODE_FLOOR_CHARS,
 )
+from .models import Settings
 from .util import clamp, safe_addstr
+
 
 @dataclass
 class Capabilities:
@@ -30,8 +32,8 @@ class Style:
     unicode_ok: bool
     colors_ok: bool
     color_mode: Literal["none", "basic", "256"]
-    wall_pairs: List[int]
-    floor_pairs: List[int]
+    wall_pairs: list[int]
+    floor_pairs: list[int]
     hud_pair: int
     map_wall_pair: int
     map_floor_pair: int
@@ -109,13 +111,14 @@ class Style:
         idx = int(t * (len(UNICODE_FLOOR_CHARS) - 1))
         return UNICODE_FLOOR_CHARS[idx]
 
+
 def init_style(stdscr) -> Style:
     unicode_ok = prefer_utf8()
 
     colors_ok = False
     color_mode: Literal["none", "basic", "256"] = "none"
-    wall_pairs: List[int] = []
-    floor_pairs: List[int] = []
+    wall_pairs: list[int] = []
+    floor_pairs: list[int] = []
     hud_pair = 0
     map_wall_pair = 0
     map_floor_pair = 0
@@ -170,15 +173,20 @@ def init_style(stdscr) -> Style:
                     pid += 1
 
             if pid < pairs and safe_init_pair(pid, 15, bg):
-                hud_pair = pid; pid += 1
+                hud_pair = pid
+                pid += 1
             if pid < pairs and safe_init_pair(pid, 250, bg):
-                map_wall_pair = pid; pid += 1
+                map_wall_pair = pid
+                pid += 1
             if pid < pairs and safe_init_pair(pid, 238, bg):
-                map_floor_pair = pid; pid += 1
+                map_floor_pair = pid
+                pid += 1
             if pid < pairs and safe_init_pair(pid, 226, bg):
-                map_player_pair = pid; pid += 1
+                map_player_pair = pid
+                pid += 1
             if pid < pairs and safe_init_pair(pid, 46, bg):
-                map_goal_pair = pid; pid += 1
+                map_goal_pair = pid
+                pid += 1
         else:
             wall_colors = [curses.COLOR_WHITE, curses.COLOR_CYAN, curses.COLOR_BLUE]
             floor_colors = [curses.COLOR_YELLOW, curses.COLOR_MAGENTA, curses.COLOR_RED]
@@ -187,23 +195,30 @@ def init_style(stdscr) -> Style:
                 if pid >= pairs:
                     break
                 if safe_init_pair(pid, fg, bg):
-                    wall_pairs.append(pid); pid += 1
+                    wall_pairs.append(pid)
+                    pid += 1
             for fg in floor_colors:
                 if pid >= pairs:
                     break
                 if safe_init_pair(pid, fg, bg):
-                    floor_pairs.append(pid); pid += 1
+                    floor_pairs.append(pid)
+                    pid += 1
 
             if pid < pairs and safe_init_pair(pid, curses.COLOR_WHITE, bg):
-                hud_pair = pid; pid += 1
+                hud_pair = pid
+                pid += 1
             if pid < pairs and safe_init_pair(pid, curses.COLOR_WHITE, bg):
-                map_wall_pair = pid; pid += 1
+                map_wall_pair = pid
+                pid += 1
             if pid < pairs and safe_init_pair(pid, curses.COLOR_BLACK, bg):
-                map_floor_pair = pid; pid += 1
+                map_floor_pair = pid
+                pid += 1
             if pid < pairs and safe_init_pair(pid, curses.COLOR_YELLOW, bg):
-                map_player_pair = pid; pid += 1
+                map_player_pair = pid
+                pid += 1
             if pid < pairs and safe_init_pair(pid, curses.COLOR_GREEN, bg):
-                map_goal_pair = pid; pid += 1
+                map_goal_pair = pid
+                pid += 1
 
     return Style(
         unicode_ok=unicode_ok,
@@ -257,12 +272,16 @@ def detect_caps(base_style: Style, mouse_motion_ok: bool) -> Capabilities:
 
 def prefer_utf8() -> bool:
     enc = (
-        (sys.stdout.encoding or "") +
-        "|" + locale.getpreferredencoding(False) +
-        "|" + (os.environ.get("LC_ALL") or "") +
-        "|" + (os.environ.get("LANG") or "")
+        (sys.stdout.encoding or "")
+        + "|"
+        + locale.getpreferredencoding(False)
+        + "|"
+        + (os.environ.get("LC_ALL") or "")
+        + "|"
+        + (os.environ.get("LANG") or "")
     ).upper()
     return ("UTF-8" in enc) or ("UTF8" in enc)
+
 
 def flat_wall_attr(style: Style) -> int:
     if style.colors_ok and style.wall_pairs:
@@ -278,6 +297,7 @@ def flat_floor_attr(style: Style) -> int:
             idx = 0
         return curses.color_pair(style.floor_pairs[idx])
     return curses.A_NORMAL
+
 
 def box_chars(unicode_ok: bool):
     if unicode_ok:

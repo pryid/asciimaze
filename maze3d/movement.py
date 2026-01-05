@@ -1,9 +1,8 @@
-# -*- coding: utf-8 -*-
 """Player movement and demo/autosolve logic."""
+
 from __future__ import annotations
 
 import math
-from typing import List, Tuple
 
 from .constants import (
     FREE_ACCEL,
@@ -16,7 +15,10 @@ from .maze import can_enter_cell, cell_floor_height, is_wall, resolve_floor_coll
 from .models import Player
 from .util import clamp, normalize_angle
 
-def demo_walk_step(grid: List[str], player: Player, path: List[Tuple[int, int]], idx: int, dt: float) -> int:
+
+def demo_walk_step(
+    grid: list[str], player: Player, path: list[tuple[int, int]], idx: int, dt: float
+) -> int:
     if not path or idx >= len(path) - 1:
         return idx
 
@@ -61,14 +63,15 @@ def demo_walk_step(grid: List[str], player: Player, path: List[Tuple[int, int]],
 
     return idx
 
-def update_free_vertical(grid: List[str], player: Player, vert_dir: int, dt: float) -> None:
+
+def update_free_vertical(grid: list[str], player: Player, vert_dir: int, dt: float) -> None:
     if vert_dir > 0:
         player.vz += FREE_ACCEL * dt
     elif vert_dir < 0:
         player.vz -= FREE_ACCEL * dt
     else:
         k = min(1.0, FREE_DAMP * dt)
-        player.vz *= (1.0 - k)
+        player.vz *= 1.0 - k
 
     player.vz = clamp(player.vz, -FREE_MAX_V, FREE_MAX_V)
     player.z += player.vz * dt
@@ -76,7 +79,7 @@ def update_free_vertical(grid: List[str], player: Player, vert_dir: int, dt: flo
     resolve_floor_collision(grid, player)
 
 
-def move_horizontal_default(grid: List[str], player: Player, forward: float, dt: float) -> None:
+def move_horizontal_default(grid: list[str], player: Player, forward: float, dt: float) -> None:
     move = forward * MOVE_SPEED * dt
     dx = math.cos(player.ang) * move
     dy = math.sin(player.ang) * move
@@ -88,7 +91,7 @@ def move_horizontal_default(grid: List[str], player: Player, forward: float, dt:
         player.y = ny
 
 
-def move_horizontal_free(grid: List[str], player: Player, forward: float, dt: float) -> None:
+def move_horizontal_free(grid: list[str], player: Player, forward: float, dt: float) -> None:
     move = forward * MOVE_SPEED * dt
     dx = math.cos(player.ang) * move
     dy = math.sin(player.ang) * move
@@ -101,7 +104,7 @@ def move_horizontal_free(grid: List[str], player: Player, forward: float, dt: fl
     resolve_floor_collision(grid, player)
 
 
-def demo_free_step(grid: List[str], player: Player, goal_xy: Tuple[int, int], dt: float) -> None:
+def demo_free_step(grid: list[str], player: Player, goal_xy: tuple[int, int], dt: float) -> None:
     tx = goal_xy[0] + 0.5
     ty = goal_xy[1] + 0.5
 

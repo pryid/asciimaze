@@ -1,10 +1,10 @@
-# -*- coding: utf-8 -*-
 """Text-mode renderer (ASCII/Unicode full blocks)."""
+
 from __future__ import annotations
 
 import curses
 import math
-from typing import Callable, List, Tuple
+from collections.abc import Callable
 
 from .constants import EYE_HEIGHT, WALL_HEIGHT
 from .models import Player, Settings
@@ -17,9 +17,9 @@ from .util import safe_addstr
 def render_text(
     stdscr,
     tr: Callable[[str], str],
-    grid: List[str],
+    grid: list[str],
     player: Player,
-    goal_xy: Tuple[int, int],
+    goal_xy: tuple[int, int],
     settings: Settings,
     style: Style,
     hud_visible: bool,
@@ -107,13 +107,16 @@ def render_text(
         x = 0
         while x < view_w:
             if y < tops[x]:
-                ch = " "; attr = curses.A_NORMAL
+                ch = " "
+                attr = curses.A_NORMAL
             elif y >= bots[x]:
                 if use_floorcast and row_top_mask is not None:
                     if row_top_mask[x]:
-                        ch = top_ch; attr = top_attr
+                        ch = top_ch
+                        attr = top_attr
                     else:
-                        ch = floor_ch; attr = floor_attr
+                        ch = floor_ch
+                        attr = floor_attr
                 else:
                     if shadows_on:
                         ch = style.floor_char_grad(y, view_h)
@@ -122,20 +125,24 @@ def render_text(
                         ch = floor_ch_flat
                         attr = floor_attr_flat
             else:
-                ch = wall_chars[x]; attr = wall_attrs[x]
+                ch = wall_chars[x]
+                attr = wall_attrs[x]
 
             start = x
             buf = [ch]
             x += 1
             while x < view_w:
                 if y < tops[x]:
-                    ch2 = " "; attr2 = curses.A_NORMAL
+                    ch2 = " "
+                    attr2 = curses.A_NORMAL
                 elif y >= bots[x]:
                     if use_floorcast and row_top_mask is not None:
                         if row_top_mask[x]:
-                            ch2 = top_ch; attr2 = top_attr
+                            ch2 = top_ch
+                            attr2 = top_attr
                         else:
-                            ch2 = floor_ch; attr2 = floor_attr
+                            ch2 = floor_ch
+                            attr2 = floor_attr
                     else:
                         if shadows_on:
                             ch2 = style.floor_char_grad(y, view_h)
@@ -144,12 +151,13 @@ def render_text(
                             ch2 = floor_ch_flat
                             attr2 = floor_attr_flat
                 else:
-                    ch2 = wall_chars[x]; attr2 = wall_attrs[x]
+                    ch2 = wall_chars[x]
+                    attr2 = wall_attrs[x]
                 if attr2 != attr:
                     break
-                buf.append(ch2); x += 1
+                buf.append(ch2)
+                x += 1
             safe_addstr(stdscr, y, start, "".join(buf), attr)
 
     if hud_visible:
         draw_hud(stdscr, tr, player, goal_xy, settings, style, mouse_active)
-

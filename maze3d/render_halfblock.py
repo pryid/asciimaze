@@ -1,10 +1,10 @@
-# -*- coding: utf-8 -*-
 """Half-block renderer."""
+
 from __future__ import annotations
 
 import curses
 import math
-from typing import Callable, List, Tuple
+from collections.abc import Callable
 
 from .constants import EYE_HEIGHT, WALL_HEIGHT
 from .models import Player, Settings
@@ -13,12 +13,13 @@ from .render_common import draw_hud
 from .style import Style, flat_floor_attr, flat_wall_attr
 from .util import safe_addstr
 
+
 def render_halfblock(
     stdscr,
     tr: Callable[[str], str],
-    grid: List[str],
+    grid: list[str],
     player: Player,
-    goal_xy: Tuple[int, int],
+    goal_xy: tuple[int, int],
     settings: Settings,
     style: Style,
     hud_visible: bool,
@@ -105,11 +106,24 @@ def render_halfblock(
                     style,
                     shadows_on,
                 )
-
         x = 0
         while x < view_w:
-            def cell(xi: int) -> Tuple[str, int]:
-                tp = top_pix[xi]; bp = bot_pix[xi]
+
+            def cell(
+                xi: int,
+                *,
+                y=y,
+                y_top=y_top,
+                y_bot=y_bot,
+                row_top_mask=row_top_mask,
+                floor_ch=floor_ch,
+                floor_attr=floor_attr,
+                top_ch=top_ch,
+                top_attr=top_attr,
+            ) -> tuple[str, int]:
+                tp = top_pix[xi]
+                bp = bot_pix[xi]
+
                 top_on = tp <= y_top < bp
                 bot_on = tp <= y_bot < bp
                 if top_on and bot_on:
@@ -139,7 +153,8 @@ def render_halfblock(
                 ch2, attr2 = cell(x)
                 if attr2 != attr:
                     break
-                buf.append(ch2); x += 1
+                buf.append(ch2)
+                x += 1
             safe_addstr(stdscr, y, start, "".join(buf), attr)
 
     if hud_visible:

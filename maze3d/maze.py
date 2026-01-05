@@ -1,23 +1,23 @@
-# -*- coding: utf-8 -*-
 """Maze generation and grid helpers."""
+
 from __future__ import annotations
 
 import random
 from collections import deque
-from typing import Dict, List, Optional, Tuple
 
-from .constants import OPEN, WALL, WALL_HEIGHT, FREE_MAX_Z
+from .constants import FREE_MAX_Z, OPEN, WALL, WALL_HEIGHT
 from .models import Player
 from .util import clamp
 
-def difficulty_to_size(d: int) -> Tuple[int, int]:
+
+def difficulty_to_size(d: int) -> tuple[int, int]:
     d = int(clamp(d, 1, 100))
     cw = 8 + int(d * 0.50)
     ch = 8 + int(d * 0.35)
     return cw, ch
 
 
-def generate_maze(cell_w: int, cell_h: int, rng: random.Random) -> List[str]:
+def generate_maze(cell_w: int, cell_h: int, rng: random.Random) -> list[str]:
     cell_w = max(2, int(cell_w))
     cell_h = max(2, int(cell_h))
     W = cell_w * 2 + 1
@@ -25,7 +25,7 @@ def generate_maze(cell_w: int, cell_h: int, rng: random.Random) -> List[str]:
     grid = [[WALL] * W for _ in range(H)]
     visited = [[False] * cell_w for _ in range(cell_h)]
 
-    def cell_to_map(cx: int, cy: int) -> Tuple[int, int]:
+    def cell_to_map(cx: int, cy: int) -> tuple[int, int]:
         return 2 * cx + 1, 2 * cy + 1
 
     stack = [(0, 0)]
@@ -54,26 +54,26 @@ def generate_maze(cell_w: int, cell_h: int, rng: random.Random) -> List[str]:
     return ["".join(row) for row in grid]
 
 
-def is_wall(grid: List[str], x: int, y: int) -> bool:
+def is_wall(grid: list[str], x: int, y: int) -> bool:
     if y < 0 or y >= len(grid) or x < 0 or x >= len(grid[0]):
         return True
     return grid[y][x] == WALL
 
 
-def cell_floor_height(grid: List[str], x: int, y: int) -> float:
+def cell_floor_height(grid: list[str], x: int, y: int) -> float:
     if y < 0 or y >= len(grid) or x < 0 or x >= len(grid[0]):
         return WALL_HEIGHT
     return WALL_HEIGHT if grid[y][x] == WALL else 0.0
 
 
-def can_enter_cell(grid: List[str], x: float, y: float, z_feet: float) -> bool:
+def can_enter_cell(grid: list[str], x: float, y: float, z_feet: float) -> bool:
     fx = int(x)
     fy = int(y)
     floor = cell_floor_height(grid, fx, fy)
     return z_feet >= floor - 0.01
 
 
-def resolve_floor_collision(grid: List[str], player: Player) -> None:
+def resolve_floor_collision(grid: list[str], player: Player) -> None:
     floor = cell_floor_height(grid, int(player.x), int(player.y))
     if player.z < floor:
         player.z = floor
@@ -84,7 +84,10 @@ def resolve_floor_collision(grid: List[str], player: Player) -> None:
         if player.vz > 0:
             player.vz = 0.0
 
-def find_path_cells(grid: List[str], start: Tuple[int, int], goal: Tuple[int, int]) -> List[Tuple[int, int]]:
+
+def find_path_cells(
+    grid: list[str], start: tuple[int, int], goal: tuple[int, int]
+) -> list[tuple[int, int]]:
     H = len(grid)
     W = len(grid[0]) if H else 0
     sx, sy = start
@@ -93,7 +96,7 @@ def find_path_cells(grid: List[str], start: Tuple[int, int], goal: Tuple[int, in
         return [start]
 
     q = deque([start])
-    prev: Dict[Tuple[int, int], Optional[Tuple[int, int]]] = {start: None}
+    prev: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
 
     while q:
         x, y = q.popleft()
@@ -108,8 +111,8 @@ def find_path_cells(grid: List[str], start: Tuple[int, int], goal: Tuple[int, in
     if goal not in prev:
         return [start]
 
-    path: List[Tuple[int, int]] = []
-    cur: Optional[Tuple[int, int]] = goal
+    path: list[tuple[int, int]] = []
+    cur: tuple[int, int] | None = goal
     while cur is not None:
         path.append(cur)
         cur = prev[cur]

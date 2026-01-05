@@ -1,18 +1,20 @@
-# -*- coding: utf-8 -*-
 """UI helpers: prompts, mouse tracking, settings menu, win screen."""
+
 from __future__ import annotations
 
 import curses
 import math
-import time
 import textwrap
-from typing import Callable, List, Literal, Tuple
+import time
+from collections.abc import Callable
+from typing import Literal
 
 from .constants import FOV_MAX, FOV_MIN
 from .i18n import LOCALES, make_tr, option_display
 from .models import Settings
 from .style import Capabilities, Style, draw_box
 from .util import clamp, safe_addstr
+
 
 def confirm_yes_no(stdscr, tr: Callable[[str], str], prompt_key: str) -> bool:
     prompt = tr(prompt_key)
@@ -32,6 +34,7 @@ def confirm_yes_no(stdscr, tr: Callable[[str], str], prompt_key: str) -> bool:
     finally:
         stdscr.nodelay(True)
 
+
 def set_mouse_tracking(enable: bool) -> bool:
     try:
         if not enable:
@@ -49,14 +52,22 @@ def set_mouse_tracking(enable: bool) -> bool:
     except Exception:
         return False
 
-def cycle_value(values: List[str], cur: str, delta: int) -> str:
+
+def cycle_value(values: list[str], cur: str, delta: int) -> str:
     try:
         i = values.index(cur)
     except ValueError:
         i = 0
     return values[(i + delta) % len(values)]
 
-def run_menu(stdscr, base_style: Style, caps: Capabilities, settings: Settings, mode: Literal["start", "pause"]) -> str:
+
+def run_menu(
+    stdscr,
+    base_style: Style,
+    caps: Capabilities,
+    settings: Settings,
+    mode: Literal["start", "pause"],
+) -> str:
     stdscr.nodelay(False)
     sel = 0
 
@@ -68,9 +79,9 @@ def run_menu(stdscr, base_style: Style, caps: Capabilities, settings: Settings, 
 
     lang_choices = list(LOCALES.keys())
     if "en" in lang_choices:
-        lang_choices = ["en"] + [l for l in lang_choices if l != "en"]
+        lang_choices = ["en"] + [lang for lang in lang_choices if lang != "en"]
 
-    items: List[Tuple[str, str, str]] = []
+    items: list[tuple[str, str, str]] = []
     if mode == "pause":
         items.append(("menu_action_resume", "action", "resume"))
     else:
@@ -161,7 +172,7 @@ def run_menu(stdscr, base_style: Style, caps: Capabilities, settings: Settings, 
             y = top_y + i
             if y >= top_y + list_h:
                 break
-            is_sel = (i == sel)
+            is_sel = i == sel
             prefix = "▶ " if unicode_ui else "> "
             pad = "  "
             attr = curses.A_REVERSE if is_sel else curses.A_NORMAL
@@ -183,7 +194,7 @@ def run_menu(stdscr, base_style: Style, caps: Capabilities, settings: Settings, 
                     warn = " " + tr("warn_mouse")
 
             line = (prefix if is_sel else pad) + f"{label:<{label_width}} {value}{warn}"
-            safe_addstr(stdscr, y, left_x, line[: left_w], attr)
+            safe_addstr(stdscr, y, left_x, line[:left_w], attr)
 
         label_key, kind, key = items[sel]
         label = tr(label_key)
@@ -241,12 +252,14 @@ def run_menu(stdscr, base_style: Style, caps: Capabilities, settings: Settings, 
         for i, line in enumerate(help_lines):
             if yy >= box_y + box_h - 2:
                 break
-            base_attr = (curses.A_BOLD if i == 0 else curses.A_DIM)
+            base_attr = curses.A_BOLD if i == 0 else curses.A_DIM
             if not line:
                 yy += 1
                 continue
             # textwrap.wrap ensures long lines are wrapped within right_w.
-            for seg in textwrap.wrap(line, width=max(1, right_w), break_long_words=True, break_on_hyphens=True):
+            for seg in textwrap.wrap(
+                line, width=max(1, right_w), break_long_words=True, break_on_hyphens=True
+            ):
                 if yy >= box_y + box_h - 2:
                     break
                 safe_addstr(stdscr, yy, right_x, seg, base_attr)
@@ -274,8 +287,8 @@ def run_menu(stdscr, base_style: Style, caps: Capabilities, settings: Settings, 
             sel = (sel + 1) % len(items)
             continue
 
-        def adjust(delta: int) -> None:
-            label_key, kind, key = items[sel]
+        def adjust(delta: int, sel_idx: int = sel) -> None:
+            label_key, kind, key = items[sel_idx]
             if kind == "range":
                 if key == "difficulty":
                     settings.difficulty = int(clamp(settings.difficulty + delta, 1, 100))
@@ -321,6 +334,7 @@ def run_menu(stdscr, base_style: Style, caps: Capabilities, settings: Settings, 
             if confirm_yes_no(stdscr, tr, "prompt_exit"):
                 stdscr.nodelay(True)
                 return "quit"
+
 
 def win_screen(stdscr, tr: Callable[[str], str], seconds: float, wait: bool) -> None:
     stdscr.erase()

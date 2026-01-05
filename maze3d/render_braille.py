@@ -1,10 +1,10 @@
-# -*- coding: utf-8 -*-
 """Braille renderer (high resolution using Unicode braille cells)."""
+
 from __future__ import annotations
 
 import curses
 import math
-from typing import Callable, List, Tuple
+from collections.abc import Callable
 
 from .constants import EYE_HEIGHT, WALL_HEIGHT
 from .models import Player, Settings
@@ -15,17 +15,23 @@ from .style import Style, flat_floor_attr, flat_wall_attr
 from .util import safe_addstr
 
 _BRAILLE_BITS = {
-    (0, 0): 0x01, (0, 1): 0x02, (0, 2): 0x04, (0, 3): 0x40,
-    (1, 0): 0x08, (1, 1): 0x10, (1, 2): 0x20, (1, 3): 0x80,
+    (0, 0): 0x01,
+    (0, 1): 0x02,
+    (0, 2): 0x04,
+    (0, 3): 0x40,
+    (1, 0): 0x08,
+    (1, 1): 0x10,
+    (1, 2): 0x20,
+    (1, 3): 0x80,
 }
 
 
 def render_braille(
     stdscr,
     tr: Callable[[str], str],
-    grid: List[str],
+    grid: list[str],
     player: Player,
-    goal_xy: Tuple[int, int],
+    goal_xy: tuple[int, int],
     settings: Settings,
     style: Style,
     hud_visible: bool,
@@ -112,26 +118,39 @@ def render_braille(
                     style,
                     shadows_on,
                 )
-
         x = 0
         while x < view_w:
-            def cell(xi: int) -> Tuple[str, int]:
+
+            def cell(
+                xi: int,
+                *,
+                y=y,
+                row_top_mask=row_top_mask,
+                floor_ch=floor_ch,
+                floor_attr=floor_attr,
+                top_ch=top_ch,
+                top_attr=top_attr,
+            ) -> tuple[str, int]:
                 bits = 0
                 for sub_col in (0, 1):
                     sx = 2 * xi + sub_col
-                    tp = top_p[sx]; bp = bot_p[sx]
+                    tp = top_p[sx]
+                    bp = bot_p[sx]
                     base_y = 4 * y
                     for sub_row in range(4):
                         py = base_y + sub_row
                         if tp <= py < bp:
                             bits |= _BRAILLE_BITS[(sub_col, sub_row)]
+
                 if bits:
                     sx0 = 2 * xi
                     sx1 = sx0 + 1
                     if dist_sub[sx0] <= dist_sub[sx1]:
-                        d = dist_sub[sx0]; side = side_sub[sx0]
+                        d = dist_sub[sx0]
+                        side = side_sub[sx0]
                     else:
-                        d = dist_sub[sx1]; side = side_sub[sx1]
+                        d = dist_sub[sx1]
+                        side = side_sub[sx1]
                     attr = style.wall_attr(d, side) if shadows_on else wall_attr_flat
                     return chr(0x2800 + bits), attr
 
@@ -155,9 +174,9 @@ def render_braille(
                 ch2, attr2 = cell(x)
                 if attr2 != attr:
                     break
-                buf.append(ch2); x += 1
+                buf.append(ch2)
+                x += 1
             safe_addstr(stdscr, y, start, "".join(buf), attr)
 
     if hud_visible:
         draw_hud(stdscr, tr, player, goal_xy, settings, style, mouse_active)
-

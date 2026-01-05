@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
 """Core data models (player state, configuration)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

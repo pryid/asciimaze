@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
 """Project-wide constants and type aliases for the 3D terminal maze."""
+
 from __future__ import annotations
 
 import math
@@ -21,10 +21,10 @@ PITCH_MAX = math.radians(75.0)
 HOLD_TIMEOUT = 0.14
 
 # Free-mode vertical movement (minecraft-ish creative flight feel)
-FREE_ACCEL = 18.0         # blocks/s^2
-FREE_MAX_V = 6.0          # blocks/s
-FREE_DAMP = 12.0          # 1/s velocity damping when no vertical input
-FREE_MAX_Z = 6.0          # clamp height (feet)
+FREE_ACCEL = 18.0  # blocks/s^2
+FREE_MAX_V = 6.0  # blocks/s
+FREE_DAMP = 12.0  # 1/s velocity damping when no vertical input
+FREE_MAX_Z = 6.0  # clamp height (feet)
 
 # FOV control
 FOV_DEFAULT = math.pi / 3.0  # 60°

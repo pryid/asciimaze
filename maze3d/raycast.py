@@ -1,17 +1,16 @@
-# -*- coding: utf-8 -*-
 """Raycasting and projection helpers."""
+
 from __future__ import annotations
 
 import curses
 import math
-from typing import List, Optional, Tuple
 
 from .constants import MAX_RAY_DIST, WALL, WALL_HEIGHT
 from .maze import is_wall
 from .style import Style, flat_floor_attr, flat_wall_attr
-from .util import clamp
 
-def cast_ray(grid: List[str], px: float, py: float, ang: float) -> Tuple[float, int]:
+
+def cast_ray(grid: list[str], px: float, py: float, ang: float) -> tuple[float, int]:
     ray_dir_x = math.cos(ang)
     ray_dir_y = math.sin(ang)
     map_x = int(px)
@@ -55,11 +54,12 @@ def cast_ray(grid: List[str], px: float, py: float, ang: float) -> Tuple[float, 
             dist = (side_dist_x - delta_dist_x) if side == 0 else (side_dist_y - delta_dist_y)
             return min(max(dist, 0.0), MAX_RAY_DIST), side
 
+
 def pitch_mid(height: float, pitch: float) -> float:
     return height * 0.5 - pitch * (height / math.pi)
 
 
-def compute_wall_span(height: int, dist: float, cam_z: float, mid: float) -> Tuple[int, int]:
+def compute_wall_span(height: int, dist: float, cam_z: float, mid: float) -> tuple[int, int]:
     proj_plane = height * 1.25
     proj = proj_plane / max(0.0001, dist)
     top = int(mid - (WALL_HEIGHT - cam_z) * proj)
@@ -68,17 +68,18 @@ def compute_wall_span(height: int, dist: float, cam_z: float, mid: float) -> Tup
         top, bot = bot, top
     return top, bot
 
+
 def floorcast_sample_row(
-    grid: List[str],
+    grid: list[str],
     px: float,
     py: float,
-    cos_arr: List[float],
-    sin_arr: List[float],
+    cos_arr: list[float],
+    sin_arr: list[float],
     dist_plane: float,
-    dist_plane_top: Optional[float],
+    dist_plane_top: float | None,
     style: Style,
     shadows_on: bool,
-) -> Tuple[List[bool], str, int, str, int]:
+) -> tuple[list[bool], str, int, str, int]:
     cols = len(cos_arr)
     hit_top = [False] * cols
 

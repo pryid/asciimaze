@@ -1,10 +1,10 @@
-# -*- coding: utf-8 -*-
 """Shared rendering helpers (HUD, renderer selection)."""
+
 from __future__ import annotations
 
 import curses
 import math
-from typing import Callable, Tuple
+from collections.abc import Callable
 
 from .constants import RenderMode
 from .i18n import option_display
@@ -26,7 +26,7 @@ def draw_hud(
     stdscr,
     tr: Callable[[str], str],
     player: Player,
-    goal_xy: Tuple[int, int],
+    goal_xy: tuple[int, int],
     settings: Settings,
     style: Style,
     mouse_active: bool,

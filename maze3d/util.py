@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
 """Small helpers used across modules."""
+
 from __future__ import annotations
 
 import curses

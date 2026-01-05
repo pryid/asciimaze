@@ -1,5 +1,3 @@
-import math
-
 import pytest
 
 from maze3d.raycast import cast_ray, compute_wall_span, floorcast_sample_row
